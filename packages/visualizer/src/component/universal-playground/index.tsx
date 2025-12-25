@@ -397,7 +397,7 @@ export function UniversalPlayground({
         {showVersionInfo && branding.version && (
           <div className="version-info-section">
             <span className="version-text">
-              Midscene.js version: {branding.version}
+              DongGUI version: {branding.version}
             </span>
           </div>
         )}

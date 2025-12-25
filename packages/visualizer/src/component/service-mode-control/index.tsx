@@ -9,6 +9,7 @@ import { EnvConfig } from '../env-config';
 import { iconForStatus } from '../misc';
 interface ServiceModeControlProps {
   serviceMode: 'Server' | 'In-Browser';
+  showEnvConfig?: boolean;
 }
 
 // Centralized text constants
@@ -24,6 +25,7 @@ const SWITCH_BUTTON_TEXT = {
 
 export const ServiceModeControl: React.FC<ServiceModeControlProps> = ({
   serviceMode,
+  showEnvConfig = true,
 }) => {
   const { setServiceMode, config } = useEnvConfig();
   const serverValid = useServerValid(serviceMode === 'Server');
@@ -106,7 +108,7 @@ export const ServiceModeControl: React.FC<ServiceModeControlProps> = ({
           {title}
         </h3>
         {statusContent}
-        <EnvConfig showTooltipWhenEmpty={serviceMode !== 'Server'} />
+        {showEnvConfig && <EnvConfig showTooltipWhenEmpty={serviceMode !== 'Server'} />}
       </div>
 
       <div className="switch-btn-wrapper">{renderSwitchButton()}</div>

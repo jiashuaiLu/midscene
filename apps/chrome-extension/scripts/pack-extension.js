@@ -35,7 +35,7 @@ if (!fs.existsSync(extensionDir)) {
 const distDir = path.resolve(__dirname, '../dist');
 
 // Create zip file
-const zipFileName = `midscene-extension-v${version}.zip`;
+const zipFileName = `donggui-extension-v${version}.zip`;
 const zipFilePath = path.resolve(extensionDir, zipFileName);
 
 // Delete existing zip file

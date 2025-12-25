@@ -393,7 +393,7 @@ export function App() {
         }}
       >
         <Alert
-          message="Midscene.js - Error"
+          message="DongGUI - Error"
           description={error}
           type="error"
           showIcon
