@@ -55,8 +55,12 @@ export interface ToolDefinition<T = Record<string, unknown>> {
   description: string;
   schema: ToolSchema;
   handler: ToolHandler<T>;
-  autoDestroy?: boolean;
 }
+
+/**
+ * Tool type for mcpKitForAgent return value
+ */
+export type Tool = ToolDefinition;
 
 /**
  * Action space item definition

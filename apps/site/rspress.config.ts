@@ -35,7 +35,7 @@ export default defineConfig({
         icon: 'lark',
         mode: 'link',
         content:
-          'https://applink.larkoffice.com/client/chat/chatter/add_by_link?link_token=291q2b25-e913-411a-8c51-191e59aab14d',
+          'https://applink.larkoffice.com/client/chat/chatter/add_by_link?link_token=693v0991-a6bb-4b44-b2e1-365ca0d199ba',
       },
     ],
     editLink: {
@@ -301,7 +301,7 @@ export default defineConfig({
           sectionHeaderText: 'API 与配置',
         },
         {
-          text: 'JavaScript API 参考',
+          text: 'API 参考（公共）',
           link: '/zh/api',
         },
         {

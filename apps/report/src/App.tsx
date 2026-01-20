@@ -4,6 +4,7 @@ import { Alert, ConfigProvider, Empty, theme } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 
+import { GroupedActionDump } from '@midscene/core';
 import { antiEscapeScriptTag } from '@midscene/shared/utils';
 import {
   Logo,
@@ -154,7 +155,7 @@ function Visualizer(props: VisualizerProps): JSX.Element {
           }
         }}
       >
-        <Panel maxSize={95} defaultSize={25}>
+        <Panel maxSize={95} defaultSize={25} minSize={15}>
           <div className="page-side">
             <Sidebar
               dumps={dumps}
@@ -292,7 +293,7 @@ export function App() {
         });
 
         // Lazy loading: Store raw content and parse only when get() is called
-        let cachedJsonContent: any = null;
+        let cachedJsonContent: GroupedActionDump | null = null;
         let isParsed = false;
 
         reportDump.push({
@@ -301,9 +302,10 @@ export function App() {
               try {
                 console.time('parse_dump');
                 const content = antiEscapeScriptTag(el.textContent || '');
-                cachedJsonContent = JSON.parse(content);
+                cachedJsonContent =
+                  GroupedActionDump.fromSerializedString(content);
                 console.timeEnd('parse_dump');
-                cachedJsonContent.attributes = attributes;
+                (cachedJsonContent as any).attributes = attributes;
                 isParsed = true;
               } catch (e) {
                 console.error(el);
@@ -312,7 +314,7 @@ export function App() {
                 cachedJsonContent = {
                   attributes,
                   error: 'Failed to parse JSON content',
-                };
+                } as any;
                 isParsed = true;
               }
             }

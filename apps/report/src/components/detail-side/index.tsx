@@ -20,6 +20,10 @@ import { fullTimeStrWithMilliseconds } from '../../../../../packages/visualizer/
 import { isElementField, useExecutionDump } from '../store';
 
 const noop = () => {};
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 const Card = (props: {
   liteMode?: boolean;
   highlightWithColor?: string;
@@ -236,6 +240,7 @@ const DetailSide = (): JSX.Element => {
   const task = useExecutionDump((store) => store.activeTask);
   const dump = useExecutionDump((store) => store.insightDump);
   const { matchedElement: elements } = dump || {};
+  const reasoningContent = task?.reasoning_content;
 
   const aiActContextValue = (task as ExecutionTaskPlanningApply)?.param
     ?.aiActContext;
@@ -641,6 +646,17 @@ const DetailSide = (): JSX.Element => {
             </pre>
           }
         />
+        {reasoningContent && (
+          <Card
+            liteMode={true}
+            title="Reasoning"
+            onMouseEnter={noop}
+            onMouseLeave={noop}
+            content={
+              <pre className="description-content">{reasoningContent}</pre>
+            }
+          />
+        )}
       </>
     );
   } else if (actions) {
@@ -662,7 +678,7 @@ const DetailSide = (): JSX.Element => {
       const planItems: JSX.Element[] = [];
 
       // Add Thought if exists
-      if ((task as ExecutionTaskPlanning).output?.log) {
+      if ((task as ExecutionTaskPlanning).output?.thought) {
         planItems.push(
           <Card
             key="thought"
@@ -672,7 +688,25 @@ const DetailSide = (): JSX.Element => {
             onMouseLeave={noop}
             content={
               <pre className="description-content">
-                {(task as ExecutionTaskPlanning).output?.log}
+                {(task as ExecutionTaskPlanning).output?.thought || ''}
+              </pre>
+            }
+          />,
+        );
+      }
+
+      // Add Note if exists
+      if ((task as ExecutionTaskPlanning).output?.note) {
+        planItems.push(
+          <Card
+            key="note"
+            liteMode={true}
+            title="Note"
+            onMouseEnter={noop}
+            onMouseLeave={noop}
+            content={
+              <pre className="description-content">
+                {(task as ExecutionTaskPlanning).output?.note}
               </pre>
             }
           />,
@@ -681,7 +715,7 @@ const DetailSide = (): JSX.Element => {
 
       // Add each plan action
       actions.forEach((action, index) => {
-        const paramToShow = action.param || {};
+        const paramToShow = isPlainObject(action.param) ? action.param : {};
         const actionType = action.type || '';
 
         // Create a Card for each param key
@@ -745,7 +779,16 @@ const DetailSide = (): JSX.Element => {
             );
           });
         } else {
-          // If no params, still show the action
+          // If no params or param is not an object, still show the action
+          // For non-object params (e.g., string), show the value
+          const nonObjectContent =
+            action.param !== null && action.param !== undefined ? (
+              <pre className="description-content">
+                {typeof action.param === 'string'
+                  ? action.param
+                  : JSON.stringify(action.param, undefined, 2)}
+              </pre>
+            ) : null;
           planItems.push(
             <Card
               key={`plan-${index}`}
@@ -754,7 +797,7 @@ const DetailSide = (): JSX.Element => {
               subtitle={action.thought}
               onMouseEnter={noop}
               onMouseLeave={noop}
-              content={null}
+              content={nonObjectContent}
             />,
           );
         }
@@ -763,22 +806,37 @@ const DetailSide = (): JSX.Element => {
       // Add More actions needed if exists
       if (
         typeof (task as ExecutionTaskPlanning).output
-          ?.more_actions_needed_by_instruction === 'boolean'
+          ?.shouldContinuePlanning === 'boolean'
       ) {
         planItems.push(
           <Card
             key="more-actions"
             liteMode={true}
-            title="More actions needed"
+            title="Should continue planning"
             onMouseEnter={noop}
             onMouseLeave={noop}
             content={
               <pre className="description-content">
-                {(task as ExecutionTaskPlanning).output
-                  ?.more_actions_needed_by_instruction
+                {(task as ExecutionTaskPlanning).output?.shouldContinuePlanning
                   ? 'true'
                   : 'false'}
               </pre>
+            }
+          />,
+        );
+      }
+
+      // Add reasoning at the end
+      if (reasoningContent) {
+        planItems.push(
+          <Card
+            key="reasoning"
+            liteMode={true}
+            title="Reasoning"
+            onMouseEnter={noop}
+            onMouseLeave={noop}
+            content={
+              <pre className="description-content">{reasoningContent}</pre>
             }
           />,
         );
@@ -870,6 +928,20 @@ const DetailSide = (): JSX.Element => {
                 {JSON.stringify(data, undefined, 2)}
               </pre>
             }
+          />,
+        );
+      }
+
+      // Add reasoning at the end
+      if (reasoningContent) {
+        outputItems.push(
+          <Card
+            key="reasoning"
+            liteMode={true}
+            onMouseEnter={noop}
+            onMouseLeave={noop}
+            content={<pre>{reasoningContent}</pre>}
+            title="Reasoning"
           />,
         );
       }

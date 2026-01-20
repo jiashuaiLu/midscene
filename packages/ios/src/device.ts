@@ -49,6 +49,7 @@ export class IOSDevice implements AbstractInterface {
   private customActions?: DeviceAction<any>[];
   private wdaBackend: WebDriverAgentBackend;
   private wdaManager: WDAManager;
+  private appNameMapping: Record<string, string> = {};
   interfaceType: InterfaceType = 'ios';
   uri: string | undefined;
   options?: IOSDeviceOpt;
@@ -81,23 +82,24 @@ export class IOSDevice implements AbstractInterface {
             .describe(
               'Whether to dismiss the keyboard after input. Defaults to true if not specified. Set to false to keep the keyboard visible after input.',
             ),
-          mode: z
-            .enum(['replace', 'clear', 'append'])
-            .default('replace')
-            .optional()
-            .describe(
-              'Input mode: "replace" (default) - clear the field and input the value; "append" - append the value to existing content; "clear" - clear the field without inputting new text.',
-            ),
+          mode: z.preprocess(
+            (val) => (val === 'append' ? 'typeOnly' : val),
+            z
+              .enum(['replace', 'clear', 'typeOnly'])
+              .default('replace')
+              .optional()
+              .describe(
+                'Input mode: "replace" (default) - clear the field and input the value; "typeOnly" - type the value directly without clearing the field first; "clear" - clear the field without inputting new text.',
+              ),
+          ),
           locate: getMidsceneLocationSchema()
             .describe('The input field to be filled')
             .optional(),
         }),
         call: async (param) => {
           const element = param.locate;
-          if (element) {
-            if (param.mode !== 'append') {
-              await this.clearInput(element as unknown as ElementInfo);
-            }
+          if (param.mode !== 'typeOnly') {
+            await this.clearInput(element as unknown as ElementInfo);
           }
 
           if (param.mode === 'clear') {
@@ -179,9 +181,8 @@ export class IOSDevice implements AbstractInterface {
           locate: LocateResultElement;
         }
       >({
-        name: 'IOSLongPress',
-        description:
-          'Trigger a long press on the screen at specified coordinates on iOS devices',
+        name: 'LongPress',
+        description: 'Trigger a long press on the screen at specified element',
         paramSchema: z.object({
           duration: z
             .number()
@@ -193,15 +194,13 @@ export class IOSDevice implements AbstractInterface {
         }),
         call: async (param) => {
           const element = param.locate;
-          assert(element, 'IOSLongPress requires an element to be located');
+          assert(element, 'LongPress requires an element to be located');
           const [x, y] = element.center;
           await this.longPress(x, y, param?.duration);
         },
       }),
       defineActionClearInput(async (param) => {
-        const element = param.locate;
-        assert(element, 'Element not found, cannot clear input');
-        await this.clearInput(element as unknown as ElementInfo);
+        await this.clearInput(param.locate as ElementInfo | undefined);
       }),
     ];
 
@@ -281,6 +280,26 @@ ScreenSize: ${size.width}x${size.height} (DPR: ${size.scale})
     }
   }
 
+  /**
+   * Set the app name to bundle ID mapping
+   */
+  public setAppNameMapping(mapping: Record<string, string>): void {
+    this.appNameMapping = mapping;
+  }
+
+  /**
+   * Resolve app name to bundle ID using the mapping.
+   * Returns the bundle ID if found, otherwise undefined.
+   *
+   * @param appName The app name to resolve.
+   */
+  private resolveBundleId(appName: string): string | undefined {
+    if (appName in this.appNameMapping) {
+      return this.appNameMapping[appName];
+    }
+    return undefined;
+  }
+
   public async launch(uri: string): Promise<IOSDevice> {
     this.uri = uri;
 
@@ -294,8 +313,10 @@ ScreenSize: ${size.width}x${size.height} (DPR: ${size.scale})
         // Try to open URL using WebDriverAgent
         await this.openUrl(uri);
       } else {
-        // Launch app using bundle ID
-        await this.wdaBackend.launchApp(uri);
+        // Launch app using bundle ID or app name
+        // Auto-resolve friendly app name to bundle ID if mapping exists
+        const resolvedUri = this.resolveBundleId(uri) ?? uri;
+        await this.wdaBackend.launchApp(resolvedUri);
       }
       debugDevice(`Successfully launched: ${uri}`);
     } catch (error: any) {
@@ -376,14 +397,12 @@ ScreenSize: ${size.width}x${size.height} (DPR: ${size.scale})
     }
   }
 
-  async clearInput(element: ElementInfo): Promise<void> {
-    if (!element) {
-      return;
+  async clearInput(element?: ElementInfo): Promise<void> {
+    if (element) {
+      // Tap on the input field to focus it
+      await this.tap(element.center[0], element.center[1]);
+      await sleep(100);
     }
-
-    // Tap on the input field to focus it
-    await this.tap(element.center[0], element.center[1]);
-    await sleep(100);
 
     // For iOS, use WebDriver's standard clear API
     // This gets the currently focused element and clears it using the /element/{id}/clear endpoint
@@ -941,7 +960,9 @@ const runWdaRequestParamSchema = z.object({
 type RunWdaRequestParam = z.infer<typeof runWdaRequestParamSchema>;
 type RunWdaRequestReturn = Awaited<ReturnType<IOSDevice['runWdaRequest']>>;
 
-const launchParamSchema = z.string().describe('App bundle ID or URL to launch');
+const launchParamSchema = z
+  .string()
+  .describe('App bundle ID, URL, or app name');
 
 type LaunchParam = z.infer<typeof launchParamSchema>;
 

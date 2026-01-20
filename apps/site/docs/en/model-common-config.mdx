@@ -58,6 +58,8 @@ import 'dotenv/config';
 
 ## Common model configurations
 
+This section lists common model configurations. For details on model differences and selection strategies, see [Recommended Vision Models](./model-strategy.html#recommended-vision-models).
+
 ### Doubao Seed Model {#doubao-seed-model}
 
 Doubao-Seed-1.6-Vision is the recommended model.
@@ -94,6 +96,51 @@ MIDSCENE_MODEL_API_KEY="......"
 MIDSCENE_MODEL_NAME="qwen-vl-max-latest"
 MIDSCENE_MODEL_FAMILY="qwen2.5-vl"
 ```
+
+### Zhipu GLM-V {#glm-v}
+
+Zhipu GLM-V is an open-source vision model from Zhipu AI. Using `GLM-4.6V` as an example:
+
+Obtain an API key from [Z.AI (Global)](https://z.ai/manage-apikey/apikey-list) or [BigModel (CN)](https://bigmodel.cn/usercenter/proj-mgmt/apikeys), and set:
+
+```bash
+MIDSCENE_MODEL_BASE_URL="https://api.z.ai/api/paas/v4" # Or https://open.bigmodel.cn/api/paas/v4
+MIDSCENE_MODEL_API_KEY="......"
+MIDSCENE_MODEL_NAME="glm-4.6v"
+MIDSCENE_MODEL_FAMILY="glm-v"
+```
+
+**Learn more about Zhipu GLM-V**
+
+- Github: [https://github.com/zai-org/GLM-V](https://github.com/zai-org/GLM-V)
+- Hugging Face: [https://huggingface.co/zai-org/GLM-4.6V](https://huggingface.co/zai-org/GLM-4.6V)
+
+### Zhipu AutoGLM {#auto-glm}
+
+Zhipu AutoGLM is an open-source mobile UI automation model (9B parameters) from Zhipu AI.
+
+After obtaining an API key from [Z.AI (Global)](https://z.ai/manage-apikey/apikey-list) or [BigModel (CN)](https://bigmodel.cn/usercenter/proj-mgmt/apikeys), configure:
+
+```bash
+MIDSCENE_MODEL_BASE_URL="https://api.z.ai/api/paas/v4" # Or https://open.bigmodel.cn/api/paas/v4
+MIDSCENE_MODEL_API_KEY="......"
+MIDSCENE_MODEL_NAME="autoglm-phone"
+MIDSCENE_MODEL_FAMILY="auto-glm" # Or "auto-glm-multilingual"
+```
+
+**About `MIDSCENE_MODEL_FAMILY` Configuration**
+
+AutoGLM provides two model versions, distinguished by `MIDSCENE_MODEL_FAMILY`:
+
+- `auto-glm` - Corresponds to AutoGLM-Phone-9B, optimized for **Chinese mobile applications**
+- `auto-glm-multilingual` - Corresponds to AutoGLM-Phone-9B-Multilingual, supports **English and other languages**
+
+Choose the appropriate version based on your application language.
+
+**Learn more about Zhipu AutoGLM**
+
+- Github: [https://github.com/zai-org/Open-AutoGLM](https://github.com/zai-org/Open-AutoGLM)
+- Hugging Face: [https://huggingface.co/zai-org/AutoGLM-Phone-9B](https://huggingface.co/zai-org/AutoGLM-Phone-9B)
 
 ### Gemini-3-Pro and Gemini-3-Flash {#gemini-3-pro}
 
@@ -141,7 +188,9 @@ Starting with version 1.0, Midscene no longer supports gpt series models as the 
 
 ## Multi-model example: GPT-5.1 planning/insight + Qwen3-VL for vision {#gpt51-planning-insight-qwen3}
 
-Use GPT-5.1 for Planning and/or Insight to handle heavy reasoning, while Qwen3-VL focuses on visual grounding. You can enable either role or both—toggle them based on your workload.
+For more information on combining multiple models, see [Advanced: Combining Multiple Models](./model-strategy.html#advanced-combining-multiple-models).
+
+Below is an example using GPT-5.1 for Planning/Insight and Qwen3-VL for vision. Use GPT-5.1 for Planning and/or Insight to handle heavy reasoning, while Qwen3-VL focuses on visual grounding. You can enable either role or both—toggle them based on your workload.
 
 ```bash
 # Default vision model: Qwen3-VL

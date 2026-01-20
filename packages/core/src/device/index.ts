@@ -1,4 +1,4 @@
-import { getMidsceneLocationSchema } from '@/common';
+import { finalizeActionName, getMidsceneLocationSchema } from '@/common';
 import type {
   ActionScrollParam,
   DeviceAction,
@@ -10,6 +10,10 @@ import { getDebug } from '@midscene/shared/logger';
 import { _keyDefinitions } from '@midscene/shared/us-keyboard-layout';
 import { z } from 'zod';
 import type { ElementCacheFeature, Rect, Size, UIContext } from '../types';
+
+export interface FileChooserHandler {
+  accept(files: string[]): Promise<void>;
+}
 
 export abstract class AbstractInterface {
   abstract interfaceType: string;
@@ -34,6 +38,11 @@ export abstract class AbstractInterface {
   abstract describe?(): string;
   abstract beforeInvokeAction?(actionName: string, param: any): Promise<void>;
   abstract afterInvokeAction?(actionName: string, param: any): Promise<void>;
+
+  // for web only
+  registerFileChooserListener?(
+    handler: (chooser: FileChooserHandler) => Promise<void>,
+  ): Promise<{ dispose: () => void; getError: () => Error | undefined }>;
 
   // @deprecated do NOT extend this method
   abstract getElementsNodeTree?: () => Promise<ElementNode>;
@@ -76,7 +85,6 @@ export const defineAction = <
 export const actionTapParamSchema = z.object({
   locate: getMidsceneLocationSchema().describe('The element to be tapped'),
 });
-// Override the inferred type to use LocateResultElement for the runtime locate field
 export type ActionTapParam = {
   locate: LocateResultElement;
 };
@@ -176,18 +184,21 @@ export const actionInputParamSchema = z.object({
   locate: getMidsceneLocationSchema()
     .describe(inputLocateDescription)
     .optional(),
-  mode: z
-    .enum(['replace', 'clear', 'append'])
-    .default('replace')
-    .optional()
-    .describe(
-      'Input mode: "replace" (default) - clear the field and input the value; "append" - append the value to existing content; "clear" - clear the field without inputting new text.',
-    ),
+  mode: z.preprocess(
+    (val) => (val === 'append' ? 'typeOnly' : val),
+    z
+      .enum(['replace', 'clear', 'typeOnly'])
+      .default('replace')
+      .optional()
+      .describe(
+        'Input mode: "replace" (default) - clear the field and input the value; "typeOnly" - type the value directly without clearing the field first; "clear" - clear the field without inputting new text.',
+      ),
+  ),
 });
 export type ActionInputParam = {
   value: string;
   locate?: LocateResultElement;
-  mode?: 'replace' | 'clear' | 'append';
+  mode?: 'replace' | 'clear' | 'typeOnly' | 'append';
 };
 
 export const defineActionInput = (
@@ -236,10 +247,6 @@ export const defineActionKeyboardPress = (
 
 // Scroll
 export const actionScrollParamSchema = z.object({
-  direction: z
-    .enum(['down', 'up', 'right', 'left'])
-    .default('down')
-    .describe('The direction to scroll'),
   scrollType: z
     .enum([
       'singleAction',
@@ -252,6 +259,12 @@ export const actionScrollParamSchema = z.object({
     .describe(
       'The scroll behavior: "singleAction" for a single scroll action, "scrollToBottom" for scrolling to the bottom, "scrollToTop" for scrolling to the top, "scrollToRight" for scrolling to the right, "scrollToLeft" for scrolling to the left',
     ),
+  direction: z
+    .enum(['down', 'up', 'right', 'left'])
+    .default('down')
+    .describe(
+      'The direction to scroll. Only effective when scrollType is "singleAction".',
+    ),
   distance: z
     .number()
     .nullable()
@@ -259,7 +272,9 @@ export const actionScrollParamSchema = z.object({
     .describe('The distance in pixels to scroll'),
   locate: getMidsceneLocationSchema()
     .optional()
-    .describe('The target element to be scrolled'),
+    .describe(
+      'Describe the target element to be scrolled on, like "the table" or "the list" or "the content area" or "the scrollable area". Do NOT provide a general intent like "scroll to find some element"',
+    ),
 });
 
 export const defineActionScroll = (
@@ -383,10 +398,12 @@ export const defineActionSwipe = (
 
 // ClearInput
 export const actionClearInputParamSchema = z.object({
-  locate: getMidsceneLocationSchema().describe('The input field to be cleared'),
+  locate: getMidsceneLocationSchema()
+    .describe('The input field to be cleared')
+    .optional(),
 });
 export type ActionClearInputParam = {
-  locate: LocateResultElement;
+  locate?: LocateResultElement;
 };
 
 export const defineActionClearInput = (
@@ -423,7 +440,8 @@ export type ActionAssertParam = {
 export const defineActionAssert = (): DeviceAction<ActionAssertParam> => {
   return defineAction<typeof actionAssertParamSchema, ActionAssertParam>({
     name: 'Print_Assert_Result',
-    description: 'Print the result of the assertion',
+    description:
+      'Print the result of the assertion. Use this only when the user asks for an assertion',
     paramSchema: actionAssertParamSchema,
     call: async (param) => {
       if (typeof param?.result !== 'boolean') {
@@ -441,6 +459,61 @@ export const defineActionAssert = (): DeviceAction<ActionAssertParam> => {
           `Assertion failed: ${param.thought || '(no thought)'} (Assertion = ${param.condition})`,
         );
       }
+    },
+  });
+};
+
+// Sleep
+export const ActionSleepParamSchema = z.object({
+  millisecond: z
+    .number()
+    .default(1000)
+    .optional()
+    .describe('Sleep duration in milliseconds, defaults to 1000ms (1 second)'),
+});
+
+export type ActionSleepParam = {
+  millisecond?: number;
+};
+
+export const defineActionSleep = (): DeviceAction<ActionSleepParam> => {
+  return defineAction<typeof ActionSleepParamSchema, ActionSleepParam>({
+    name: 'Sleep',
+    description:
+      'Wait for a specified duration before continuing. Defaults to 1 second (1000ms) if not specified.',
+    paramSchema: ActionSleepParamSchema,
+    call: async (param) => {
+      const duration = param?.millisecond ?? 1000;
+      getDebug('device:common-action')(`Sleeping for ${duration}ms`);
+      await new Promise((resolve) => setTimeout(resolve, duration));
+    },
+  });
+};
+
+// Finalize
+export const actionFinalizeParamSchema = z.object({
+  message: z
+    .string()
+    .optional()
+    .describe(
+      'The conclusion, data, or return value that the user needs. This message will be provided to the user when the task is finalized.',
+    ),
+});
+export type ActionFinalizeParam = {
+  message?: string;
+};
+
+export const defineActionFinalize = (): DeviceAction<ActionFinalizeParam> => {
+  return defineAction<typeof actionFinalizeParamSchema, ActionFinalizeParam>({
+    name: finalizeActionName,
+    description:
+      'Finalize the task. You can provide the conclusion, data, or return value that the user needs in the message.',
+    paramSchema: actionFinalizeParamSchema,
+    call: async (param) => {
+      getDebug('device:common-action')(
+        `Task finalized${param?.message ? `: ${param.message}` : ''}`,
+      );
+      return param.message;
     },
   });
 };

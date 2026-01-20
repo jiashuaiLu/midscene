@@ -1,3 +1,4 @@
+import { Link } from '@rspress/core/theme-original';
 import { useI18n } from '../i18n';
 import { CTAButtons } from './CTAButtons';
 
@@ -19,12 +20,12 @@ export function Banner() {
               <span className="font-sans font-medium text-[10px] md:text-xs text-black/85 dark:text-white/85">
                 {t('newBadge')}
                 <span className="mx-1 text-black/40 dark:text-white/40">|</span>
-                <a
+                <Link
                   className="text-black/60 hover:underline dark:text-white/60"
                   href="./changelog"
                 >
                   {t('changelogLink')}
-                </a>
+                </Link>
               </span>
             </div>
           </div>
@@ -68,21 +69,77 @@ export function Banner() {
 
         {/* Right Image */}
         <div className="w-full lg:w-[786px] flex justify-center lg:justify-end">
-          <div className="dark:hidden w-full h-full flex items-center justify-center">
-            <img
-              src="/banner-light.png"
-              alt="Midscene banner"
-              className="w-full max-w-[780px]"
-              loading="lazy"
+          {/* Light mode video */}
+          <div className="dark:hidden relative p-[11px] max-w-[802px]">
+            {/* Gradient border */}
+            <div
+              className="absolute inset-0 rounded-[24px] pointer-events-none"
+              style={{
+                background:
+                  'linear-gradient(to bottom, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0) 100%)',
+                WebkitMask:
+                  'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                WebkitMaskComposite: 'xor',
+                maskComposite: 'exclude',
+                padding: '1px',
+              }}
             />
+            <div className="relative">
+              <video
+                src="https://lf3-static.bytednsdoc.com/obj/eden-cn/nupipfups/Midscene/midscene-banner-light.mp4"
+                poster="https://lf3-static.bytednsdoc.com/obj/eden-cn/nupipfups/Midscene/midscene-banner-light.png"
+                className="w-full max-w-[780px] rounded-[13px]"
+                autoPlay
+                muted
+                loop
+                playsInline
+                controls={false}
+                preload="auto"
+              />
+              <div
+                className="absolute inset-0 w-full h-full rounded-[13px] pointer-events-none"
+                style={{
+                  background:
+                    'linear-gradient(to bottom, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 1) 100%)',
+                }}
+              />
+            </div>
           </div>
-          <div className="hidden dark:flex w-full h-full items-center justify-center">
-            <img
-              src="/banner-dark.png"
-              alt="Midscene banner"
-              className="w-full max-w-[780px]"
-              loading="lazy"
+          {/* Dark mode video */}
+          <div className="hidden dark:block relative p-[11px] max-w-[802px]">
+            {/* Gradient border */}
+            <div
+              className="absolute inset-0 rounded-[24px] pointer-events-none"
+              style={{
+                background:
+                  'linear-gradient(to bottom, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 100%)',
+                WebkitMask:
+                  'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                WebkitMaskComposite: 'xor',
+                maskComposite: 'exclude',
+                padding: '1px',
+              }}
             />
+            <div className="relative">
+              <video
+                src="https://lf3-static.bytednsdoc.com/obj/eden-cn/nupipfups/Midscene/midscene-banner-dark.mp4"
+                poster="https://lf3-static.bytednsdoc.com/obj/eden-cn/nupipfups/Midscene/midscene-banner-dark.png"
+                className="w-full max-w-[780px] rounded-[13px]"
+                autoPlay
+                muted
+                loop
+                playsInline
+                controls={false}
+                preload="auto"
+              />
+              <div
+                className="absolute inset-0 w-full h-full rounded-[13px] pointer-events-none"
+                style={{
+                  background:
+                    'linear-gradient(to bottom, rgba(18, 18, 18, 0) 0%, rgba(18, 18, 18, 1) 100%)',
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>

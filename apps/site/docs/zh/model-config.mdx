@@ -24,6 +24,8 @@ Midscene 默认集成了 OpenAI SDK 调用 AI 服务，它限定了推理服务�
 | `MIDSCENE_MODEL_TIMEOUT` | AI 接口调用超时时间（毫秒，默认意图），默认使用 OpenAI SDK 默认值（10 分钟）|
 | `MIDSCENE_MODEL_TEMPERATURE` | 模型采样温度 |
 | `MIDSCENE_MODEL_MAX_TOKENS` | 模型响应的 max_tokens 数配置，默认是 2048 |
+| `MIDSCENE_MODEL_RETRY_COUNT` | AI 调用失败时的重试次数，默认 1（即失败后重试 1 次）|
+| `MIDSCENE_MODEL_RETRY_INTERVAL` | AI 调用重试间隔毫秒数，默认 2000 |
 | `MIDSCENE_MODEL_HTTP_PROXY` | HTTP/HTTPS 代理配置，如 `http://127.0.0.1:8080` 或 `https://proxy.example.com:8080`，优先级高于 `MIDSCENE_MODEL_SOCKS_PROXY` |
 | `MIDSCENE_MODEL_SOCKS_PROXY` | SOCKS 代理配置，如 `socks5://127.0.0.1:1080` |
 | `MIDSCENE_MODEL_INIT_CONFIG_JSON` | 覆盖 OpenAI SDK 初始化配置的 JSON |
@@ -43,6 +45,11 @@ Midscene 默认集成了 OpenAI SDK 调用 AI 服务，它限定了推理服务�
 | `MIDSCENE_INSIGHT_MODEL_NAME` | 模型名称 |
 | `MIDSCENE_INSIGHT_MODEL_TIMEOUT` | 可选，Insight 意图的 AI 接口调用超时时间（毫秒）|
 | `MIDSCENE_INSIGHT_MODEL_TEMPERATURE` | 可选，Insight 意图的模型采样温度 |
+<<<<<<< HEAD
+=======
+| `MIDSCENE_INSIGHT_MODEL_RETRY_COUNT` | 可选，效果等同于 `MIDSCENE_MODEL_RETRY_COUNT` |
+| `MIDSCENE_INSIGHT_MODEL_RETRY_INTERVAL` | 可选，效果等同于 `MIDSCENE_MODEL_RETRY_INTERVAL` |
+>>>>>>> 197021a22677c057594e540cebb0d692775c6286
 | `MIDSCENE_INSIGHT_MODEL_HTTP_PROXY` | 可选，效果等同于 `MIDSCENE_MODEL_HTTP_PROXY` |
 | `MIDSCENE_INSIGHT_MODEL_SOCKS_PROXY` | 可选，效果等同于 `MIDSCENE_MODEL_SOCKS_PROXY`  |
 | `MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON` | 可选，效果等同于 `MIDSCENE_MODEL_INIT_CONFIG_JSON`  |
@@ -58,6 +65,11 @@ Midscene 默认集成了 OpenAI SDK 调用 AI 服务，它限定了推理服务�
 | `MIDSCENE_PLANNING_MODEL_NAME` | 模型名称 |
 | `MIDSCENE_PLANNING_MODEL_TIMEOUT` | 可选，Planning 意图的 AI 接口调用超时时间（毫秒）|
 | `MIDSCENE_PLANNING_MODEL_TEMPERATURE` | 可选，Planning 意图的模型采样温度 |
+<<<<<<< HEAD
+=======
+| `MIDSCENE_PLANNING_MODEL_RETRY_COUNT` | 可选，效果等同于 `MIDSCENE_MODEL_RETRY_COUNT` |
+| `MIDSCENE_PLANNING_MODEL_RETRY_INTERVAL` | 可选，效果等同于 `MIDSCENE_MODEL_RETRY_INTERVAL` |
+>>>>>>> 197021a22677c057594e540cebb0d692775c6286
 | `MIDSCENE_PLANNING_MODEL_HTTP_PROXY` | 可选，效果等同于 `MIDSCENE_MODEL_HTTP_PROXY` |
 | `MIDSCENE_PLANNING_MODEL_SOCKS_PROXY` | 可选，效果等同于 `MIDSCENE_MODEL_SOCKS_PROXY`  |
 | `MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON` | 可选，效果等同于 `MIDSCENE_MODEL_INIT_CONFIG_JSON`  |
@@ -162,15 +174,31 @@ DEBUGGING MODE: langsmith wrapper enabled
 
 ### 使用 Langfuse
 
-Langfuse 是另一个流行的 LLM 可观测性平台。集成方式与 LangSmith 类似。
+[Langfuse](https://langfuse.com) 是另一个流行的 LLM 可观测性平台。Midscene 已经集成了 Langfuse 的 `observeOpenAI` wrapper，自动追踪所有 OpenAI API 调用。
+
+由于 Langfuse 的追踪基于 OpenTelemetry，你需要在应用启动时初始化 OpenTelemetry SDK。
 
 **步骤 1：安装依赖**
 
 ```bash
-npm install langfuse
+npm install @langfuse/openai @langfuse/otel @opentelemetry/sdk-node
 ```
 
-**步骤 2：设置环境变量**
+**步骤 2：初始化 OpenTelemetry（必需）**
+
+在应用入口文件的**最顶部**添加以下代码：
+
+```typescript
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { LangfuseSpanProcessor } from "@langfuse/otel";
+
+const sdk = new NodeSDK({
+  spanProcessors: [new LangfuseSpanProcessor()],
+});
+sdk.start();
+```
+
+**步骤 3：设置环境变量**
 
 ```bash
 # 启用 Midscene 的 Langfuse 自动集成
@@ -186,8 +214,11 @@ export LANGFUSE_BASE_URL="https://cloud.langfuse.com" # 🇪🇺 欧洲区域
 启动 Midscene 后，你应该会看到类似如下的日志：
 
 ```log
+OpenTelemetry SDK initialized for Langfuse tracing
 DEBUGGING MODE: langfuse wrapper enabled
 ```
+
+**了解更多**：查看 [Langfuse OpenAI 集成文档](https://langfuse.com/integrations/model-providers/openai-js) 获取更多配置选项和最佳实践。
 
 注意：
 - LangSmith 和 Langfuse 可以同时启用

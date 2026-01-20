@@ -8,6 +8,8 @@ If you want to try Midscene right away, pick a model and follow its configuratio
 * [Doubao Seed Model](./model-common-config#doubao-seed-model)
 * [Qwen3-VL](./model-common-config#qwen3-vl)
 * [Qwen2.5-VL](./model-common-config#qwen25-vl)
+* [Zhipu GLM-V](./model-common-config#glm-v)
+* [Zhipu AutoGLM](./model-common-config#auto-glm)
 * [Gemini-3-Pro / Gemini-3-Flash](./model-common-config#gemini-3-pro)
 * [UI-TARS](./model-common-config#ui-tars)
 
@@ -53,6 +55,7 @@ If you are unsure where to start, pick whichever model is easiest to access toda
 | Doubao Seed Model<br />[Quick setup](./model-common-config#doubao-seed-model) | Volcano Engine:<br />[Doubao-Seed-1.6-Vision](https://www.volcengine.com/docs/82379/1799865) | ⭐⭐⭐⭐<br />Strong at UI planning and targeting<br />Slightly slower |
 | Qwen3-VL<br />[Quick setup](./model-common-config#qwen3-vl) | [Alibaba Cloud](https://help.aliyun.com/zh/model-studio/vision)<br/>[OpenRouter](https://openrouter.ai/qwen)<br/>[Ollama (open-source)](https://ollama.com/library/qwen3-vl) | ⭐⭐⭐⭐<br />Assertion in very complex scenes can fluctuate<br />Excellent performance and accuracy<br />Open-source builds available ([HuggingFace](https://huggingface.co/Qwen) / [GitHub](https://github.com/QwenLM/)) |
 | Qwen2.5-VL<br />[Quick setup](./model-common-config#qwen25-vl) | [Alibaba Cloud](https://help.aliyun.com/zh/model-studio/vision)<br/>[OpenRouter](https://openrouter.ai/qwen) | ⭐⭐⭐<br />Overall quality is behind Qwen3-VL |
+| Zhipu GLM-4.6V<br />[Quick setup](./model-common-config#glm-v) | [Z.AI (Global)](https://docs.z.ai/guides/vlm/glm-4.6v)<br/>[BigModel (CN)](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-4.6v) | Newly integrated, welcome to try it out<br />Weights open-sourced on [HuggingFace](https://huggingface.co/zai-org/GLM-4.6V) |
 | Gemini-3-Pro / Gemini-3-Flash<br />[Quick setup](./model-common-config#gemini-3-pro) | [Google Cloud](https://ai.google.dev/gemini-api/docs/models/gemini) | ⭐⭐⭐<br />Gemini-3-Flash is supported<br />Price is higher than Doubao and Qwen |
 | UI-TARS<br />[Quick setup](./model-common-config#ui-tars) | [Volcano Engine](https://www.volcengine.com/docs/82379/1536429) | ⭐⭐<br />Strong exploratory ability but results vary by scenario<br />Open-source versions available ([HuggingFace](https://huggingface.co/bytedance-research/UI-TARS-72B-SFT) / [GitHub](https://github.com/bytedance/ui-tars)) |
 
@@ -78,7 +81,17 @@ Return the actual field values you filled.
 
 This sounds simple, but the model must understand per-field rules, identify each control, operate a multi-step region selector, paginate and trigger validation, and still locate every element. Default models often cannot satisfy all of these at once, so success rates drop.
 
-In these situations, configure separate models for *Planning* and *Insight*, and use the default model purely as a “visual localizer” to reduce reasoning burden. Multi-model setups are the most practical and effective way to lift UI automation success, at a small cost in latency and tokens.
+In these situations, configure separate models for *Planning* and *Insight*, while **keeping the default model** as your baseline. This is not “only Planning and Insight”—it is **default model + (optional) Planning/Insight**. Multi-model setups are the most practical and effective way to lift UI automation success, at a small cost in latency and tokens.
+
+### Model responsibility overview
+
+By default, the system follows these rules (unset intents fall back to the default model):
+
+- **Default model**: handles **element localization** (Locate), plus anything not explicitly assigned to Planning/Insight.
+- **Planning model (optional)**: handles **task planning** (Planning in `aiAct` / `ai`).
+- **Insight model (optional)**: handles **data extraction, assertions, and UI understanding** (`aiQuery` / `aiAsk` / `aiAssert`).
+
+In short: **Planning goes to the Planning model, localization stays on the default model, and extraction/assertion goes to Insight** when configured.
 
 For a ready-to-use environment snippet, including an Insight model, see the [multi-model example](./model-common-config#gpt51-planning-insight-qwen3).
 
@@ -120,7 +133,24 @@ For example, on mobile UI automation, if you have a component tree plus full a11
 
 See [Model configuration](./model-config).
 
-### API style
+### About the `deepThink` option in `aiAct`
+
+The `deepThink` option controls whether models use deep reasoning during planning. Currently supported for `qwen3-vl`, `doubao-seed-1.6` and `glm-v` model families.
+
+When enabled, you'll see a `Reasoning` section in the report. Planning takes longer but produces more accurate results.
+
+**Default behavior varies by provider:**
+- `qwen3-vl` on Alibaba Cloud: disabled by default (faster, less accurate)
+- `doubao-seed-1.6` on Volcano Engine: enabled by default (slower, more accurate)
+- `glm-v` on Z.AI: enabled by default (slower, more accurate)
+
+You can explicitly set `deepThink: true` or `deepThink: false` to override the provider's default.
+
+`deepThink` accepts `'unset' | true | false`. The default is `'unset'` (same as omitting the option, following the model provider's default strategy).
+
+Note: The implementation details behind `deepThink` may evolve in the future as model providers change.
+
+### API style for model service provider
 
 Midscene expects providers to expose an OpenAI-compatible API (this does **not** mean you must use OpenAI models).
 

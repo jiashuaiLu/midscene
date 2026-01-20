@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExecutionDump } from '@midscene/core';
+import { GroupedActionDump } from '@midscene/core';
 import type { Agent as PageAgent } from '@midscene/core/agent';
 import { getTmpDir } from '@midscene/core/utils';
 import { PLAYGROUND_SERVER_PORT } from '@midscene/shared/constants';
@@ -158,10 +159,9 @@ class PlaygroundServer {
    */
   private async recreateAgent(): Promise<void> {
     if (!this.agentFactory) {
-      console.warn(
-        'Cannot recreate agent: factory function not provided. Agent recreation is only available when using factory mode.',
+      throw new Error(
+        'Cannot recreate agent: factory function not provided. Attempting to destroy existing agent only.',
       );
-      return;
     }
 
     console.log('Recreating agent to cancel current task...');
@@ -327,6 +327,29 @@ class PlaygroundServer {
         });
       }
 
+      // Always recreate agent before execution to ensure latest config is applied
+      if (this.agentFactory) {
+        console.log('Destroying old agent before execution...');
+        try {
+          if (this.agent && typeof this.agent.destroy === 'function') {
+            await this.agent.destroy();
+          }
+        } catch (error) {
+          console.warn('Failed to destroy old agent:', error);
+        }
+
+        console.log('Creating new agent with latest config...');
+        try {
+          this.agent = await this.agentFactory();
+          console.log('Agent created successfully');
+        } catch (error) {
+          console.error('Failed to create agent:', error);
+          return res.status(500).json({
+            error: `Failed to create agent: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          });
+        }
+      }
+
       // Update device options if provided
       if (
         deviceOptions &&
@@ -366,7 +389,7 @@ class PlaygroundServer {
 
       const response: {
         result: unknown;
-        dump: string | null;
+        dump: ExecutionDump | null;
         error: string | null;
         reportHTML: string | null;
         requestId?: string;
@@ -409,7 +432,8 @@ class PlaygroundServer {
       try {
         const dumpString = this.agent.dumpDataString();
         if (dumpString) {
-          const groupedDump = JSON.parse(dumpString);
+          const groupedDump =
+            GroupedActionDump.fromSerializedString(dumpString);
           // Extract first execution from grouped dump, matching local execution adapter behavior
           response.dump = groupedDump.executions?.[0] || null;
         } else {
@@ -479,7 +503,8 @@ class PlaygroundServer {
           try {
             const dumpString = this.agent.dumpDataString?.();
             if (dumpString) {
-              const groupedDump = JSON.parse(dumpString);
+              const groupedDump =
+                GroupedActionDump.fromSerializedString(dumpString);
               // Extract first execution from grouped dump
               dump = groupedDump.executions?.[0] || null;
             }
@@ -489,7 +514,7 @@ class PlaygroundServer {
             console.warn('Failed to get execution data before cancel:', error);
           }
 
-          // Recreate agent to cancel the current task
+          // Recreate/destroy agent to cancel the current task
           await this.recreateAgent();
 
           // Clean up
@@ -578,9 +603,11 @@ class PlaygroundServer {
       try {
         overrideAIConfig(aiConfig);
 
+        // Note: Agent will be recreated on next execution to apply new config
         return res.json({
           status: 'ok',
-          message: 'AI config updated successfully',
+          message:
+            'AI config updated. Agent will be recreated on next execution.',
         });
       } catch (error: unknown) {
         const errorMessage =

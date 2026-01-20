@@ -65,16 +65,17 @@ describe('Agent with custom OpenAI client', () => {
           "httpProxy": undefined,
           "intent": "default",
           "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
           "modelName": "qwen2.5-vl-max",
           "openaiApiKey": "test-key",
           "openaiBaseURL": "https://api.sample.com/v1",
           "openaiExtraConfig": undefined,
+          "retryCount": 1,
+          "retryInterval": 2000,
           "socksProxy": undefined,
           "temperature": 0,
           "timeout": undefined,
           "uiTarsModelVersion": undefined,
-          "vlMode": "qwen2.5-vl",
-          "vlModeRaw": "qwen2.5-vl",
         }
       `);
 
@@ -87,16 +88,17 @@ describe('Agent with custom OpenAI client', () => {
           "httpProxy": undefined,
           "intent": "default",
           "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
           "modelName": "qwen2.5-vl-max",
           "openaiApiKey": "test-key",
           "openaiBaseURL": "https://api.sample.com/v1",
           "openaiExtraConfig": undefined,
+          "retryCount": 1,
+          "retryInterval": 2000,
           "socksProxy": undefined,
           "temperature": 0,
           "timeout": undefined,
           "uiTarsModelVersion": undefined,
-          "vlMode": "qwen2.5-vl",
-          "vlModeRaw": "qwen2.5-vl",
         }
       `);
 
@@ -109,16 +111,17 @@ describe('Agent with custom OpenAI client', () => {
           "httpProxy": undefined,
           "intent": "default",
           "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
           "modelName": "qwen2.5-vl-max",
           "openaiApiKey": "test-key",
           "openaiBaseURL": "https://api.sample.com/v1",
           "openaiExtraConfig": undefined,
+          "retryCount": 1,
+          "retryInterval": 2000,
           "socksProxy": undefined,
           "temperature": 0,
           "timeout": undefined,
           "uiTarsModelVersion": undefined,
-          "vlMode": "qwen2.5-vl",
-          "vlModeRaw": "qwen2.5-vl",
         }
       `);
     });
@@ -143,16 +146,17 @@ describe('Agent with custom OpenAI client', () => {
           "httpProxy": undefined,
           "intent": "default",
           "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
           "modelName": "qwen2.5-vl-max",
           "openaiApiKey": "test-key",
           "openaiBaseURL": "https://api.sample.com/v1",
           "openaiExtraConfig": undefined,
+          "retryCount": 1,
+          "retryInterval": 2000,
           "socksProxy": undefined,
           "temperature": 0,
           "timeout": undefined,
           "uiTarsModelVersion": undefined,
-          "vlMode": "qwen2.5-vl",
-          "vlModeRaw": "qwen2.5-vl",
         }
       `);
 
@@ -165,16 +169,17 @@ describe('Agent with custom OpenAI client', () => {
           "httpProxy": undefined,
           "intent": "planning",
           "modelDescription": "",
+          "modelFamily": undefined,
           "modelName": "gpt-5.1",
           "openaiApiKey": "test-planning-key",
           "openaiBaseURL": "https://api.smaple-planning.com/v1",
           "openaiExtraConfig": undefined,
+          "retryCount": 1,
+          "retryInterval": 2000,
           "socksProxy": undefined,
           "temperature": 0,
           "timeout": undefined,
           "uiTarsModelVersion": undefined,
-          "vlMode": undefined,
-          "vlModeRaw": undefined,
         }
       `);
 
@@ -187,16 +192,17 @@ describe('Agent with custom OpenAI client', () => {
           "httpProxy": undefined,
           "intent": "insight",
           "modelDescription": "",
+          "modelFamily": undefined,
           "modelName": "model-for-insight",
           "openaiApiKey": "test-insight-key",
           "openaiBaseURL": "https://api.sample-insight.com/v1",
           "openaiExtraConfig": undefined,
+          "retryCount": 1,
+          "retryInterval": 2000,
           "socksProxy": undefined,
           "temperature": 0,
           "timeout": undefined,
           "uiTarsModelVersion": undefined,
-          "vlMode": undefined,
-          "vlModeRaw": undefined,
         }
       `);
     });

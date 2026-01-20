@@ -1,4 +1,4 @@
-import { AIResponseFormat, type AIUsageInfo } from '@/types';
+import type { AIUsageInfo, DeepThinkOption } from '@/types';
 import type { CodeGenerationChunk, StreamingCallback } from '@/types';
 import {
   type IModelConfig,
@@ -6,7 +6,7 @@ import {
   MIDSCENE_LANGSMITH_DEBUG,
   MIDSCENE_MODEL_MAX_TOKENS,
   OPENAI_MAX_TOKENS,
-  type TVlModeTypes,
+  type TModelFamily,
   type UITarsModelVersion,
   globalConfigManager,
 } from '@midscene/shared/env';
@@ -17,20 +17,19 @@ import { jsonrepair } from 'jsonrepair';
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/index';
 import type { Stream } from 'openai/streaming';
-import type { AIActionType, AIArgs } from '../../common';
+import type { AIArgs } from '../../common';
+import { isAutoGLM, isUITars } from '../auto-glm/util';
 
 async function createChatClient({
-  AIActionTypeValue,
   modelConfig,
 }: {
-  AIActionTypeValue: AIActionType;
   modelConfig: IModelConfig;
 }): Promise<{
   completion: OpenAI.Chat.Completions;
   modelName: string;
   modelDescription: string;
-  uiTarsVersion?: UITarsModelVersion;
-  vlMode: TVlModeTypes | undefined;
+  uiTarsModelVersion?: UITarsModelVersion;
+  modelFamily: TModelFamily | undefined;
 }> {
   const {
     socksProxy,
@@ -40,8 +39,8 @@ async function createChatClient({
     openaiApiKey,
     openaiExtraConfig,
     modelDescription,
-    uiTarsModelVersion: uiTarsVersion,
-    vlMode,
+    uiTarsModelVersion,
+    modelFamily,
     createOpenAIClient,
     timeout,
   } = modelConfig;
@@ -176,7 +175,7 @@ async function createChatClient({
     }
     console.log('DEBUGGING MODE: langfuse wrapper enabled');
     // Use variable to prevent static analysis by bundlers
-    const langfuseModule = 'langfuse';
+    const langfuseModule = '@langfuse/openai';
     const { observeOpenAI } = await import(langfuseModule);
     openai = observeOpenAI(openai);
   }
@@ -193,29 +192,38 @@ async function createChatClient({
     completion: openai.chat.completions,
     modelName,
     modelDescription,
-    uiTarsVersion,
-    vlMode,
+    uiTarsModelVersion,
+    modelFamily,
   };
 }
 
 export async function callAI(
   messages: ChatCompletionMessageParam[],
-  AIActionTypeValue: AIActionType,
   modelConfig: IModelConfig,
   options?: {
     stream?: boolean;
     onChunk?: StreamingCallback;
+    deepThink?: DeepThinkOption;
   },
-): Promise<{ content: string; usage?: AIUsageInfo; isStreamed: boolean }> {
-  const { completion, modelName, modelDescription, uiTarsVersion, vlMode } =
-    await createChatClient({
-      AIActionTypeValue,
-      modelConfig,
-    });
+): Promise<{
+  content: string;
+  reasoning_content?: string;
+  usage?: AIUsageInfo;
+  isStreamed: boolean;
+}> {
+  const {
+    completion,
+    modelName,
+    modelDescription,
+    uiTarsModelVersion,
+    modelFamily,
+  } = await createChatClient({
+    modelConfig,
+  });
 
   const maxTokens =
-    globalConfigManager.getEnvConfigValue(MIDSCENE_MODEL_MAX_TOKENS) ??
-    globalConfigManager.getEnvConfigValue(OPENAI_MAX_TOKENS);
+    globalConfigManager.getEnvConfigValueAsNumber(MIDSCENE_MODEL_MAX_TOKENS) ??
+    globalConfigManager.getEnvConfigValueAsNumber(OPENAI_MAX_TOKENS);
   const debugCall = getDebug('ai:call');
   const debugProfileStats = getDebug('ai:profile:stats');
   const debugProfileDetail = getDebug('ai:profile:detail');
@@ -226,6 +234,7 @@ export async function callAI(
   const isStreaming = options?.stream && options?.onChunk;
   let content: string | undefined;
   let accumulated = '';
+  let accumulatedReasoning = '';
   let usage: OpenAI.CompletionUsage | undefined;
   let timeCost: number | undefined;
 
@@ -251,13 +260,34 @@ export async function callAI(
   const commonConfig = {
     temperature,
     stream: !!isStreaming,
-    max_tokens: typeof maxTokens === 'number' ? maxTokens : undefined,
-    ...(vlMode === 'qwen2.5-vl' // qwen vl v2 specific config
+    max_tokens: maxTokens,
+    ...(modelFamily === 'qwen2.5-vl' // qwen vl v2 specific config
       ? {
           vl_high_resolution_images: true,
         }
       : {}),
   };
+
+  if (isAutoGLM(modelFamily)) {
+    (commonConfig as unknown as Record<string, number>).top_p = 0.85;
+    (commonConfig as unknown as Record<string, number>).frequency_penalty = 0.2;
+  }
+
+  const {
+    config: deepThinkConfig,
+    debugMessage,
+    warningMessage,
+  } = resolveDeepThinkConfig({
+    deepThink: options?.deepThink,
+    modelFamily,
+  });
+  if (debugMessage) {
+    debugCall(debugMessage);
+  }
+  if (warningMessage) {
+    debugCall(warningMessage);
+    console.warn(warningMessage);
+  }
 
   try {
     debugCall(
@@ -270,6 +300,7 @@ export async function callAI(
           model: modelName,
           messages,
           ...commonConfig,
+          ...deepThinkConfig,
         },
         {
           stream: true,
@@ -290,6 +321,7 @@ export async function callAI(
 
         if (content || reasoning_content) {
           accumulated += content;
+          accumulatedReasoning += reasoning_content;
           const chunkData: CodeGenerationChunk = {
             content,
             reasoning_content,
@@ -332,32 +364,78 @@ export async function callAI(
       }
       content = accumulated;
       debugProfileStats(
+<<<<<<< HEAD
         `streaming model, ${modelName}, mode, ${vlMode || 'default'}, cost-ms, ${timeCost}, temperature, ${temperature ?? ''}`,
+=======
+        `streaming model, ${modelName}, mode, ${modelFamily || 'default'}, cost-ms, ${timeCost}, temperature, ${temperature ?? ''}`,
+>>>>>>> 197021a22677c057594e540cebb0d692775c6286
       );
     } else {
-      const result = await completion.create({
-        model: modelName,
-        messages,
-        ...commonConfig,
-      } as any);
-      timeCost = Date.now() - startTime;
+      // Non-streaming with retry logic
+      const retryCount = modelConfig.retryCount ?? 1;
+      const retryInterval = modelConfig.retryInterval ?? 2000;
+      const maxAttempts = retryCount + 1; // retryCount=1 means 2 total attempts (1 initial + 1 retry)
 
+<<<<<<< HEAD
       debugProfileStats(
         `model, ${modelName}, mode, ${vlMode || 'default'}, ui-tars-version, ${uiTarsVersion}, prompt-tokens, ${result.usage?.prompt_tokens || ''}, completion-tokens, ${result.usage?.completion_tokens || ''}, total-tokens, ${result.usage?.total_tokens || ''}, cost-ms, ${timeCost}, requestId, ${result._request_id || ''}, temperature, ${temperature ?? ''}`,
       );
+=======
+      let lastError: Error | undefined;
+>>>>>>> 197021a22677c057594e540cebb0d692775c6286
 
-      debugProfileDetail(`model usage detail: ${JSON.stringify(result.usage)}`);
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const result = await completion.create({
+            model: modelName,
+            messages,
+            ...commonConfig,
+            ...deepThinkConfig,
+          } as any);
 
-      assert(
-        result.choices,
-        `invalid response from LLM service: ${JSON.stringify(result)}`,
-      );
-      content = result.choices[0].message.content!;
-      usage = result.usage;
+          timeCost = Date.now() - startTime;
+
+          debugProfileStats(
+            `model, ${modelName}, mode, ${modelFamily || 'default'}, ui-tars-version, ${uiTarsModelVersion}, prompt-tokens, ${result.usage?.prompt_tokens || ''}, completion-tokens, ${result.usage?.completion_tokens || ''}, total-tokens, ${result.usage?.total_tokens || ''}, cost-ms, ${timeCost}, requestId, ${result._request_id || ''}, temperature, ${temperature ?? ''}`,
+          );
+
+          debugProfileDetail(
+            `model usage detail: ${JSON.stringify(result.usage)}`,
+          );
+
+          if (!result.choices) {
+            throw new Error(
+              `invalid response from LLM service: ${JSON.stringify(result)}`,
+            );
+          }
+
+          content = result.choices[0].message.content!;
+          if (!content) {
+            throw new Error('empty content from AI model');
+          }
+
+          accumulatedReasoning =
+            (result.choices[0].message as any)?.reasoning_content || '';
+          usage = result.usage;
+          break; // Success, exit retry loop
+        } catch (error) {
+          lastError = error as Error;
+          if (attempt < maxAttempts) {
+            console.warn(
+              `[Midscene] AI call failed (attempt ${attempt}/${maxAttempts}), retrying in ${retryInterval}ms... Error: ${lastError.message}`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, retryInterval));
+          }
+        }
+      }
+
+      if (!content) {
+        throw lastError;
+      }
     }
 
-    debugCall(`response: ${content}`);
-    assert(content, 'empty content');
+    debugCall(`response reasoning content: ${accumulatedReasoning}`);
+    debugCall(`response content: ${content}`);
 
     // Ensure we always have usage info for streaming responses
     if (isStreaming && !usage) {
@@ -375,13 +453,14 @@ export async function callAI(
 
     return {
       content: content || '',
+      reasoning_content: accumulatedReasoning || undefined,
       usage: buildUsageInfo(usage),
       isStreamed: !!isStreaming,
     };
   } catch (e: any) {
     console.error(' call AI error', e);
     const newError = new Error(
-      `failed to call ${isStreaming ? 'streaming ' : ''}AI model service (${modelName}): ${e.message}. Trouble shooting: https://midscenejs.com/model-provider.html`,
+      `failed to call ${isStreaming ? 'streaming ' : ''}AI model service (${modelName}): ${e.message}\nTrouble shooting: https://midscenejs.com/model-provider.html`,
       {
         cause: e,
       },
@@ -392,13 +471,22 @@ export async function callAI(
 
 export async function callAIWithObjectResponse<T>(
   messages: ChatCompletionMessageParam[],
-  AIActionTypeValue: AIActionType,
   modelConfig: IModelConfig,
-): Promise<{ content: T; contentString: string; usage?: AIUsageInfo }> {
-  const response = await callAI(messages, AIActionTypeValue, modelConfig);
+  options?: {
+    deepThink?: DeepThinkOption;
+  },
+): Promise<{
+  content: T;
+  contentString: string;
+  usage?: AIUsageInfo;
+  reasoning_content?: string;
+}> {
+  const response = await callAI(messages, modelConfig, {
+    deepThink: options?.deepThink,
+  });
   assert(response, 'empty response');
-  const vlMode = modelConfig.vlMode;
-  const jsonContent = safeParseJson(response.content, vlMode);
+  const modelFamily = modelConfig.modelFamily;
+  const jsonContent = safeParseJson(response.content, modelFamily);
   assert(
     typeof jsonContent === 'object',
     `failed to parse json response from model (${modelConfig.modelName}): ${response.content}`,
@@ -407,15 +495,15 @@ export async function callAIWithObjectResponse<T>(
     content: jsonContent,
     contentString: response.content,
     usage: response.usage,
+    reasoning_content: response.reasoning_content,
   };
 }
 
 export async function callAIWithStringResponse(
   msgs: AIArgs,
-  AIActionTypeValue: AIActionType,
   modelConfig: IModelConfig,
 ): Promise<{ content: string; usage?: AIUsageInfo }> {
-  const { content, usage } = await callAI(msgs, AIActionTypeValue, modelConfig);
+  const { content, usage } = await callAI(msgs, modelConfig);
   return { content, usage };
 }
 
@@ -453,6 +541,70 @@ export function preprocessDoubaoBboxJson(input: string) {
     }
   }
   return input;
+}
+
+export function resolveDeepThinkConfig({
+  deepThink,
+  modelFamily,
+}: {
+  deepThink?: DeepThinkOption;
+  modelFamily?: TModelFamily;
+}): {
+  config: Record<string, unknown>;
+  debugMessage?: string;
+  warningMessage?: string;
+} {
+  const normalizedDeepThink = deepThink === 'unset' ? undefined : deepThink;
+
+  if (normalizedDeepThink === undefined) {
+    return { config: {}, debugMessage: undefined };
+  }
+
+  if (modelFamily === 'qwen3-vl') {
+    return {
+      config: { enable_thinking: normalizedDeepThink },
+      debugMessage: `deepThink mapped to enable_thinking=${normalizedDeepThink} for qwen3-vl`,
+    };
+  }
+
+  if (modelFamily === 'doubao-vision') {
+    return {
+      config: {
+        thinking: { type: normalizedDeepThink ? 'enabled' : 'disabled' },
+      },
+      debugMessage: `deepThink mapped to thinking.type=${normalizedDeepThink ? 'enabled' : 'disabled'} for doubao-vision`,
+    };
+  }
+
+  if (modelFamily === 'glm-v') {
+    return {
+      config: {
+        thinking: { type: normalizedDeepThink ? 'enabled' : 'disabled' },
+      },
+      debugMessage: `deepThink mapped to thinking.type=${normalizedDeepThink ? 'enabled' : 'disabled'} for glm-v`,
+    };
+  }
+
+  if (modelFamily === 'gpt-5') {
+    return {
+      config: normalizedDeepThink
+        ? {
+            reasoning: { effort: 'high' },
+          }
+        : {
+            reasoning: { effort: 'low' },
+          },
+      debugMessage: normalizedDeepThink
+        ? 'deepThink mapped to reasoning.effort=high for gpt-5'
+        : 'deepThink disabled for gpt-5',
+    };
+  }
+
+  return {
+    config: {},
+    debugMessage: `deepThink ignored: unsupported model_family "${modelFamily ?? 'default'}"`,
+    warningMessage: `The "deepThink" option is not supported for model_family "${modelFamily ?? 'default'}".`,
+  };
 }
 
 /**
@@ -503,7 +655,10 @@ function normalizeJsonObject(obj: any): any {
   return obj;
 }
 
-export function safeParseJson(input: string, vlMode: TVlModeTypes | undefined) {
+export function safeParseJson(
+  input: string,
+  modelFamily: TModelFamily | undefined,
+) {
   const cleanJsonString = extractJSONFromCodeBlock(input);
   // match the point
   if (cleanJsonString?.match(/\((\d+),(\d+)\)/)) {
@@ -514,19 +669,32 @@ export function safeParseJson(input: string, vlMode: TVlModeTypes | undefined) {
   }
 
   let parsed: any;
+  let lastError: unknown;
   try {
     parsed = JSON.parse(cleanJsonString);
     return normalizeJsonObject(parsed);
-  } catch {}
+  } catch (error) {
+    lastError = error;
+  }
   try {
     parsed = JSON.parse(jsonrepair(cleanJsonString));
     return normalizeJsonObject(parsed);
-  } catch (e) {}
-
-  if (vlMode === 'doubao-vision' || vlMode === 'vlm-ui-tars') {
-    const jsonString = preprocessDoubaoBboxJson(cleanJsonString);
-    parsed = JSON.parse(jsonrepair(jsonString));
-    return normalizeJsonObject(parsed);
+  } catch (error) {
+    lastError = error;
   }
-  throw Error(`failed to parse json response: ${input}`);
+
+  if (modelFamily === 'doubao-vision' || isUITars(modelFamily)) {
+    const jsonString = preprocessDoubaoBboxJson(cleanJsonString);
+    try {
+      parsed = JSON.parse(jsonrepair(jsonString));
+      return normalizeJsonObject(parsed);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw Error(
+    `failed to parse LLM response into JSON. Error - ${String(
+      lastError ?? 'unknown error',
+    )}. Response - \n ${input}`,
+  );
 }

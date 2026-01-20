@@ -1,4 +1,5 @@
 import type {
+  DeepThinkOption,
   DeviceAction,
   InterfaceType,
   PlanningAIResponse,
@@ -11,9 +12,9 @@ import { getDebug } from '@midscene/shared/logger';
 import { assert } from '@midscene/shared/utils';
 import type { ChatCompletionMessageParam } from 'openai/resources/index';
 import {
-  AIActionType,
   buildYamlFlowFromPlans,
   fillBboxParam,
+  finalizeActionName,
   findAllMidsceneLocatorField,
 } from '../common';
 import type { ConversationHistory } from './conversation-history';
@@ -33,17 +34,20 @@ export async function plan(
     conversationHistory: ConversationHistory;
     includeBbox: boolean;
     imagesIncludeCount?: number;
+    deepThink?: DeepThinkOption;
   },
 ): Promise<PlanningAIResponse> {
   const { context, modelConfig, conversationHistory } = opts;
-  const { screenshotBase64, size } = context;
+  const { size } = context;
+  const screenshotBase64 = context.screenshot.base64;
 
-  const { vlMode } = modelConfig;
+  const { modelFamily } = modelConfig;
 
   const systemPrompt = await systemPromptToTaskPlanning({
     actionSpace: opts.actionSpace,
-    vlMode,
+    modelFamily,
     includeBbox: opts.includeBbox,
+    includeThought: opts.deepThink !== true,
   });
 
   let imagePayload = screenshotBase64;
@@ -53,7 +57,7 @@ export async function plan(
   const bottomLimit = imageHeight;
 
   // Process image based on VL mode requirements
-  if (vlMode === 'qwen2.5-vl') {
+  if (modelFamily === 'qwen2.5-vl') {
     const paddedResult = await paddingToMatchBlockByBase64(imagePayload);
     imageWidth = paddedResult.width;
     imageHeight = paddedResult.height;
@@ -128,23 +132,29 @@ export async function plan(
     content: planFromAI,
     contentString: rawResponse,
     usage,
+    reasoning_content,
   } = await callAIWithObjectResponse<RawResponsePlanningAIResponse>(
     msgs,
-    AIActionType.PLAN,
     modelConfig,
+    {
+      deepThink: opts.deepThink === 'unset' ? undefined : opts.deepThink,
+    },
   );
 
   const actions = planFromAI.action ? [planFromAI.action] : [];
+  let shouldContinuePlanning = true;
+  if (actions[0]?.type === finalizeActionName) {
+    debug('finalize action planned, stop planning');
+    shouldContinuePlanning = false;
+  }
   const returnValue: PlanningAIResponse = {
     ...planFromAI,
     actions,
     rawResponse,
     usage,
-    yamlFlow: buildYamlFlowFromPlans(
-      actions,
-      opts.actionSpace,
-      planFromAI.sleep,
-    ),
+    reasoning_content,
+    yamlFlow: buildYamlFlowFromPlans(actions, opts.actionSpace),
+    shouldContinuePlanning,
   };
 
   assert(planFromAI, "can't get plans from AI");
@@ -164,30 +174,19 @@ export async function plan(
 
     locateFields.forEach((field) => {
       const locateResult = action.param[field];
-      if (locateResult && vlMode !== undefined) {
-        // Always use VL mode to fill bbox parameters
+      if (locateResult && modelFamily !== undefined) {
+        // Always use model family to fill bbox parameters
         action.param[field] = fillBboxParam(
           locateResult,
           imageWidth,
           imageHeight,
           rightLimit,
           bottomLimit,
-          vlMode,
+          modelFamily,
         );
       }
     });
   });
-
-  if (
-    actions.length === 0 &&
-    returnValue.more_actions_needed_by_instruction &&
-    !returnValue.sleep
-  ) {
-    console.warn(
-      'No actions planned for the prompt, but model said more actions are needed:',
-      userInstruction,
-    );
-  }
 
   conversationHistory.append({
     role: 'assistant',

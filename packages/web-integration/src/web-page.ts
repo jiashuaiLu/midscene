@@ -404,7 +404,7 @@ export abstract class AbstractWebPage extends AbstractInterface {
     };
   }
 
-  async clearInput(element: ElementInfo): Promise<void> {}
+  async clearInput(element?: ElementInfo): Promise<void> {}
 
   abstract scrollUntilTop(startingPoint?: Point): Promise<void>;
   abstract scrollUntilBottom(startingPoint?: Point): Promise<void>;
@@ -429,6 +429,8 @@ export const commonWebActionsForWebPage = <T extends AbstractWebPage>(
   defineActionTap(async (param) => {
     const element = param.locate;
     assert(element, 'Element not found, cannot tap');
+
+    // Pure tap action - file handling is done at Page layer via setFileChooserHandler
     await page.mouse.click(element.center[0], element.center[1], {
       button: 'left',
     });
@@ -456,7 +458,7 @@ export const commonWebActionsForWebPage = <T extends AbstractWebPage>(
   }),
   defineActionInput(async (param) => {
     const element = param.locate;
-    if (element && param.mode !== 'append') {
+    if (element && param.mode !== 'typeOnly') {
       await page.clearInput(element as unknown as ElementInfo);
     }
 
@@ -621,9 +623,7 @@ export const commonWebActionsForWebPage = <T extends AbstractWebPage>(
     : []),
 
   defineActionClearInput(async (param) => {
-    const element = param.locate;
-    assert(element, 'Element not found, cannot clear input');
-    await page.clearInput(element as unknown as ElementInfo);
+    await page.clearInput(param.locate as ElementInfo | undefined);
   }),
 
   defineAction({

@@ -1,5 +1,6 @@
 import { TaskCache, TaskExecutor } from '@/agent';
 import type { AbstractInterface } from '@/device';
+import { ScreenshotItem } from '@/screenshot-item';
 import { uuid } from '@midscene/shared/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type Service from '../../src';
@@ -59,7 +60,7 @@ describe('aiAction cacheable option propagation', () => {
     // Create mock insight
     mockService = {
       contextRetrieverFn: vi.fn().mockResolvedValue({
-        screenshotBase64: validBase64Image,
+        screenshot: ScreenshotItem.create(validBase64Image),
         size: { width: 1920, height: 1080, dpr: 1 },
         tree: {
           id: 'root',
@@ -120,7 +121,7 @@ describe('aiAction cacheable option propagation', () => {
 
     // Mock model config
     const mockModelConfig = {
-      vlMode: undefined,
+      modelFamily: undefined,
       model: 'test-model',
     } as any;
 
@@ -200,7 +201,7 @@ describe('aiAction cacheable option propagation', () => {
     convertPlanSpy.mockResolvedValue({
       tasks: [],
       planLog: 'test',
-      usedModel: { model: 'test-model', vlMode: undefined },
+      usedModel: { model: 'test-model', modelFamily: undefined },
       yamlFlow: [],
     });
 
@@ -242,7 +243,7 @@ describe('aiAction cacheable option propagation', () => {
 
     // Mock model config
     const mockModelConfig = {
-      vlMode: undefined,
+      modelFamily: undefined,
       model: 'test-model',
     } as any;
 
@@ -283,7 +284,7 @@ describe('aiAction cacheable option propagation', () => {
 
     // Mock model config
     const mockModelConfig = {
-      vlMode: undefined,
+      modelFamily: undefined,
       model: 'test-model',
     } as any;
 
@@ -345,7 +346,7 @@ describe('aiAction cacheable option propagation', () => {
         baseUrl: 'https://test.com',
         apiKey: 'test-key',
         model: 'gpt-4o-mini',
-        vlMode: true,
+        modelFamily: true,
       }),
       throwErrorIfNonVLModel: vi.fn(),
       getUploadTestServerUrl: vi.fn().mockReturnValue(undefined),
@@ -403,7 +404,7 @@ describe('aiAction cacheable option propagation', () => {
         baseUrl: 'https://test.com',
         apiKey: 'test-key',
         model: 'gpt-4o-mini',
-        vlMode: true,
+        modelFamily: true,
       }),
       throwErrorIfNonVLModel: vi.fn(),
       getUploadTestServerUrl: vi.fn().mockReturnValue(undefined),
@@ -461,7 +462,7 @@ describe('aiAction cacheable option propagation', () => {
         baseUrl: 'https://test.com',
         apiKey: 'test-key',
         model: 'gpt-4o-mini',
-        vlMode: true,
+        modelFamily: true,
       }),
       throwErrorIfNonVLModel: vi.fn(),
       getUploadTestServerUrl: vi.fn().mockReturnValue(undefined),
@@ -521,7 +522,7 @@ describe('aiAction cacheable option propagation', () => {
         baseUrl: 'https://test.com',
         apiKey: 'test-key',
         model: 'gpt-4o-mini',
-        vlMode: true,
+        modelFamily: true,
       }),
       throwErrorIfNonVLModel: vi.fn(),
       getUploadTestServerUrl: vi.fn().mockReturnValue(undefined),

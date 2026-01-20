@@ -1,9 +1,12 @@
 import {
   MIDSCENE_INSIGHT_MODEL_API_KEY,
   MIDSCENE_INSIGHT_MODEL_BASE_URL,
+  MIDSCENE_INSIGHT_MODEL_FAMILY,
   MIDSCENE_INSIGHT_MODEL_HTTP_PROXY,
   MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON,
   MIDSCENE_INSIGHT_MODEL_NAME,
+  MIDSCENE_INSIGHT_MODEL_RETRY_COUNT,
+  MIDSCENE_INSIGHT_MODEL_RETRY_INTERVAL,
   MIDSCENE_INSIGHT_MODEL_SOCKS_PROXY,
   MIDSCENE_INSIGHT_MODEL_TEMPERATURE,
   MIDSCENE_INSIGHT_MODEL_TIMEOUT,
@@ -13,6 +16,8 @@ import {
   MIDSCENE_MODEL_HTTP_PROXY,
   MIDSCENE_MODEL_INIT_CONFIG_JSON,
   MIDSCENE_MODEL_NAME,
+  MIDSCENE_MODEL_RETRY_COUNT,
+  MIDSCENE_MODEL_RETRY_INTERVAL,
   MIDSCENE_MODEL_SOCKS_PROXY,
   MIDSCENE_MODEL_TEMPERATURE,
   MIDSCENE_MODEL_TIMEOUT,
@@ -21,9 +26,12 @@ import {
   MIDSCENE_OPENAI_SOCKS_PROXY,
   MIDSCENE_PLANNING_MODEL_API_KEY,
   MIDSCENE_PLANNING_MODEL_BASE_URL,
+  MIDSCENE_PLANNING_MODEL_FAMILY,
   MIDSCENE_PLANNING_MODEL_HTTP_PROXY,
   MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON,
   MIDSCENE_PLANNING_MODEL_NAME,
+  MIDSCENE_PLANNING_MODEL_RETRY_COUNT,
+  MIDSCENE_PLANNING_MODEL_RETRY_INTERVAL,
   MIDSCENE_PLANNING_MODEL_SOCKS_PROXY,
   MIDSCENE_PLANNING_MODEL_TEMPERATURE,
   MIDSCENE_PLANNING_MODEL_TIMEOUT,
@@ -56,6 +64,11 @@ interface IModelConfigKeys {
    * Temperature
    */
   temperature: string;
+  /**
+   * Retry
+   */
+  retryCount: string;
+  retryInterval: string;
 }
 
 export const INSIGHT_MODEL_CONFIG_KEYS: IModelConfigKeys = {
@@ -74,7 +87,7 @@ export const INSIGHT_MODEL_CONFIG_KEYS: IModelConfigKeys = {
   /**
    * Extra
    */
-  modelFamily: 'THERE_IS_NO_MODEL_FAMILY_FOR_INSIGHT',
+  modelFamily: MIDSCENE_INSIGHT_MODEL_FAMILY,
   /**
    * Timeout
    */
@@ -83,6 +96,11 @@ export const INSIGHT_MODEL_CONFIG_KEYS: IModelConfigKeys = {
    * Temperature
    */
   temperature: MIDSCENE_INSIGHT_MODEL_TEMPERATURE,
+  /**
+   * Retry
+   */
+  retryCount: MIDSCENE_INSIGHT_MODEL_RETRY_COUNT,
+  retryInterval: MIDSCENE_INSIGHT_MODEL_RETRY_INTERVAL,
 } as const;
 
 export const PLANNING_MODEL_CONFIG_KEYS: IModelConfigKeys = {
@@ -101,7 +119,7 @@ export const PLANNING_MODEL_CONFIG_KEYS: IModelConfigKeys = {
   /**
    * Extra
    */
-  modelFamily: 'THERE_IS_NO_MODEL_FAMILY_FOR_PLANNING',
+  modelFamily: MIDSCENE_PLANNING_MODEL_FAMILY,
   /**
    * Timeout
    */
@@ -110,6 +128,11 @@ export const PLANNING_MODEL_CONFIG_KEYS: IModelConfigKeys = {
    * Temperature
    */
   temperature: MIDSCENE_PLANNING_MODEL_TEMPERATURE,
+  /**
+   * Retry
+   */
+  retryCount: MIDSCENE_PLANNING_MODEL_RETRY_COUNT,
+  retryInterval: MIDSCENE_PLANNING_MODEL_RETRY_INTERVAL,
 } as const;
 
 // modelConfig return default
@@ -138,6 +161,11 @@ export const DEFAULT_MODEL_CONFIG_KEYS: IModelConfigKeys = {
    * Temperature
    */
   temperature: MIDSCENE_MODEL_TEMPERATURE,
+  /**
+   * Retry
+   */
+  retryCount: MIDSCENE_MODEL_RETRY_COUNT,
+  retryInterval: MIDSCENE_MODEL_RETRY_INTERVAL,
 } as const;
 
 // read from process.env
@@ -166,4 +194,9 @@ export const DEFAULT_MODEL_CONFIG_KEYS_LEGACY: IModelConfigKeys = {
    * Temperature - use the new key for legacy mode too
    */
   temperature: MIDSCENE_MODEL_TEMPERATURE,
+  /**
+   * Retry - use the new key for legacy mode too
+   */
+  retryCount: MIDSCENE_MODEL_RETRY_COUNT,
+  retryInterval: MIDSCENE_MODEL_RETRY_INTERVAL,
 } as const;

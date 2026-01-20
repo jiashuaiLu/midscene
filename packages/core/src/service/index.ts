@@ -1,3 +1,4 @@
+import { isAutoGLM, isUITars } from '@/ai-model/auto-glm/util';
 import {
   AiExtractElementInfo,
   AiLocateElement,
@@ -5,7 +6,7 @@ import {
 } from '@/ai-model/index';
 import { AiLocateSection } from '@/ai-model/inspect';
 import { elementDescriberInstruction } from '@/ai-model/prompt/describe';
-import { AIActionType, type AIArgs, expandSearchArea } from '@/common';
+import { type AIArgs, expandSearchArea } from '@/common';
 import type {
   AIDescribeElementResponse,
   AIUsageInfo,
@@ -94,12 +95,17 @@ export default class Service {
       searchAreaPrompt = query.prompt;
     }
 
-    const { vlMode } = modelConfig;
+    const { modelFamily } = modelConfig;
 
-    if (searchAreaPrompt && !vlMode) {
+    if (searchAreaPrompt && !modelFamily) {
       console.warn(
         'The "deepThink" feature is not supported with multimodal LLM. Please config VL model for Midscene. https://midscenejs.com/model-config',
       );
+      searchAreaPrompt = undefined;
+    }
+
+    if (searchAreaPrompt && isAutoGLM(modelFamily)) {
+      console.warn('The "deepThink" feature is not supported with AutoGLM.');
       searchAreaPrompt = undefined;
     }
 
@@ -129,13 +135,14 @@ export default class Service {
     }
 
     const startTime = Date.now();
-    const { parseResult, rect, rawResponse, usage } = await AiLocateElement({
-      callAIFn: this.aiVendorFn,
-      context,
-      targetElementDescription: queryPrompt,
-      searchConfig: searchAreaResponse,
-      modelConfig,
-    });
+    const { parseResult, rect, rawResponse, usage, reasoning_content } =
+      await AiLocateElement({
+        callAIFn: this.aiVendorFn,
+        context,
+        targetElementDescription: queryPrompt,
+        searchConfig: searchAreaResponse,
+        modelConfig,
+      });
 
     const timeCost = Date.now() - startTime;
     const taskInfo: ServiceTaskInfo = {
@@ -147,6 +154,7 @@ export default class Service {
       searchArea,
       searchAreaRawResponse,
       searchAreaUsage,
+      reasoning_content,
     };
 
     let errorLog: string | undefined;
@@ -219,20 +227,22 @@ export default class Service {
 
     const startTime = Date.now();
 
-    const { parseResult, usage } = await AiExtractElementInfo<T>({
-      context,
-      dataQuery: dataDemand,
-      multimodalPrompt,
-      extractOption: opt,
-      modelConfig,
-      pageDescription,
-    });
+    const { parseResult, usage, reasoning_content } =
+      await AiExtractElementInfo<T>({
+        context,
+        dataQuery: dataDemand,
+        multimodalPrompt,
+        extractOption: opt,
+        modelConfig,
+        pageDescription,
+      });
 
     const timeCost = Date.now() - startTime;
     const taskInfo: ServiceTaskInfo = {
       ...(this.taskInfo ? this.taskInfo : {}),
       durationMs: timeCost,
       rawResponse: JSON.stringify(parseResult),
+      reasoning_content,
     };
 
     let errorLog: string | undefined;
@@ -267,6 +277,7 @@ export default class Service {
       data,
       thought,
       usage,
+      reasoning_content,
       dump,
     };
   }
@@ -280,10 +291,11 @@ export default class Service {
   ): Promise<Pick<AIDescribeElementResponse, 'description'>> {
     assert(target, 'target is required for service.describe');
     const context = await this.contextRetrieverFn();
-    const { screenshotBase64, size } = context;
+    const { size } = context;
+    const screenshotBase64 = context.screenshot.base64;
     assert(screenshotBase64, 'screenshot is required for service.describe');
     // The result of the "describe" function will be used for positioning, so essentially it is a form of grounding.
-    const { vlMode } = modelConfig;
+    const { modelFamily } = modelConfig;
     const systemPrompt = elementDescriberInstruction();
 
     // Convert [x,y] center point to Rect if needed
@@ -309,12 +321,16 @@ export default class Service {
     });
 
     if (opt?.deepThink) {
-      const searchArea = expandSearchArea(targetRect, context.size, vlMode);
+      const searchArea = expandSearchArea(
+        targetRect,
+        context.size,
+        modelFamily,
+      );
       debug('describe: set searchArea', searchArea);
       const croppedResult = await cropByRect(
         imagePayload,
         searchArea,
-        vlMode === 'qwen2.5-vl',
+        modelFamily === 'qwen2.5-vl',
       );
       imagePayload = croppedResult.imageBase64;
     }
@@ -338,11 +354,7 @@ export default class Service {
     const callAIFn = this
       .aiVendorFn as typeof callAIWithObjectResponse<AIDescribeElementResponse>;
 
-    const res = await callAIFn(
-      msgs,
-      AIActionType.DESCRIBE_ELEMENT,
-      modelConfig,
-    );
+    const res = await callAIFn(msgs, modelConfig);
 
     const { content } = res;
     assert(!content.error, `describe failed: ${content.error}`);

@@ -9,62 +9,61 @@ import { getContextFromFixture } from 'tests/evaluation';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 
 vi.setConfig({
-  testTimeout: 60 * 1000,
+  testTimeout: 120 * 1000,
 });
 
 const modelConfig = globalModelConfigManager.getModelConfig('insight');
 
-describe.skipIf(!modelConfig.vlMode)('service locate with deep think', () => {
-  test('service locate with search area', async () => {
-    const { context } = await getContextFromFixture('taobao');
+describe.skipIf(!modelConfig.modelFamily)(
+  'service locate with deep think',
+  () => {
+    test('service locate with search area', async () => {
+      const { context } = await getContextFromFixture('taobao');
 
-    const service = new Service(context);
-    const { element } = await service.locate(
-      {
-        prompt: '购物车 icon',
-        deepThink: true,
-      },
-      {},
-      modelConfig,
-    );
-    expect(element).toBeDefined();
-
-    await sleep(3000);
-  });
-
-  test('service locate with search area - deep think', async () => {
-    const { context } = await getContextFromFixture('taobao');
-
-    const service = new Service(context);
-    const { element, rect } = await service.locate(
-      {
-        prompt: '顶部购物车 icon',
-        deepThink: true,
-      },
-      {},
-      modelConfig,
-    );
-    expect(element).toBeDefined();
-    expect(rect).toBeDefined();
-    expect(
-      distance(
+      const service = new Service(context);
+      const { element } = await service.locate(
         {
-          x: element!.rect.left,
-          y: element!.rect.top,
+          prompt: '购物车 icon',
+          deepThink: true,
         },
-        {
-          x: rect!.left,
-          y: rect!.top,
-        },
-      ),
-    ).toBeLessThan(100);
-    await sleep(3000);
-  });
-});
+        {},
+        modelConfig,
+      );
+      expect(element).toBeDefined();
 
-vi.setConfig({
-  testTimeout: 60 * 1000,
-});
+      await sleep(3000);
+    }, 300000); // 5 minutes timeout
+
+    test('service locate with search area - deep think', async () => {
+      const { context } = await getContextFromFixture('taobao');
+
+      const service = new Service(context);
+      const { element, rect } = await service.locate(
+        {
+          prompt: '顶部购物车 icon',
+          deepThink: true,
+        },
+        {},
+        modelConfig,
+      );
+      expect(element).toBeDefined();
+      expect(rect).toBeDefined();
+      expect(
+        distance(
+          {
+            x: element!.rect.left,
+            y: element!.rect.top,
+          },
+          {
+            x: rect!.left,
+            y: rect!.top,
+          },
+        ),
+      ).toBeLessThan(100);
+      await sleep(3000);
+    }, 300000); // 5 minutes timeout
+  },
+);
 
 test.skip('service locate with search area', async () => {
   const { context } = await getContextFromFixture('image-only');

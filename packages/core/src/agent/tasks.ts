@@ -1,10 +1,21 @@
-import { ConversationHistory, plan, uiTarsPlanning } from '@/ai-model';
-import type { TMultimodalPrompt, TUserPrompt } from '@/common';
-import type { AbstractInterface } from '@/device';
+import {
+  ConversationHistory,
+  autoGLMPlanning,
+  plan,
+  uiTarsPlanning,
+} from '@/ai-model';
+import { isAutoGLM, isUITars } from '@/ai-model/auto-glm/util';
+import {
+  type TMultimodalPrompt,
+  type TUserPrompt,
+  getReadableTimeString,
+} from '@/common';
+import type { AbstractInterface, FileChooserHandler } from '@/device';
 import type Service from '@/service';
 import type { TaskRunner } from '@/task-runner';
 import { TaskExecutionError } from '@/task-runner';
 import type {
+  DeepThinkOption,
   DeviceAction,
   ExecutionTaskApply,
   ExecutionTaskInsightQueryApply,
@@ -14,7 +25,6 @@ import type {
   MidsceneYamlFlowItem,
   PlanningAIResponse,
   PlanningAction,
-  PlanningActionParamSleep,
   PlanningActionParamWaitFor,
   ServiceDump,
   ServiceExtractOption,
@@ -154,7 +164,7 @@ export class TaskExecutor {
         return {
           output: {
             actions: [],
-            more_actions_needed_by_instruction: false,
+            shouldContinuePlanning: false,
             log: '',
             yamlString,
           },
@@ -208,10 +218,47 @@ export class TaskExecutor {
     cacheable?: boolean,
     replanningCycleLimitOverride?: number,
     imagesIncludeCount?: number,
+    deepThink?: DeepThinkOption,
+    fileChooserAccept?: string[],
   ): Promise<
     ExecutionResult<
       | {
           yamlFlow?: MidsceneYamlFlowItem[]; // for cache use
+          output?: string;
+        }
+      | undefined
+    >
+  > {
+    return withFileChooser(this.interface, fileChooserAccept, async () => {
+      return this.runAction(
+        userPrompt,
+        modelConfigForPlanning,
+        modelConfigForDefaultIntent,
+        includeBboxInPlanning,
+        aiActContext,
+        cacheable,
+        replanningCycleLimitOverride,
+        imagesIncludeCount,
+        deepThink,
+      );
+    });
+  }
+
+  private async runAction(
+    userPrompt: string,
+    modelConfigForPlanning: IModelConfig,
+    modelConfigForDefaultIntent: IModelConfig,
+    includeBboxInPlanning: boolean,
+    aiActContext?: string,
+    cacheable?: boolean,
+    replanningCycleLimitOverride?: number,
+    imagesIncludeCount?: number,
+    deepThink?: DeepThinkOption,
+  ): Promise<
+    ExecutionResult<
+      | {
+          yamlFlow?: MidsceneYamlFlowItem[]; // for cache use
+          output?: string;
         }
       | undefined
     >
@@ -233,6 +280,7 @@ export class TaskExecutor {
     );
 
     let errorCountInOnePlanningLoop = 0; // count the number of errors in one planning loop
+    let outputString: string | undefined;
 
     // Main planning loop - unified plan/replan logic
     while (true) {
@@ -244,16 +292,12 @@ export class TaskExecutor {
             userInstruction: userPrompt,
             aiActContext,
             imagesIncludeCount,
+            deepThink,
           },
           executor: async (param, executorContext) => {
-            const startTime = Date.now();
             const { uiContext } = executorContext;
             assert(uiContext, 'uiContext is required for Planning task');
-            const { vlMode } = modelConfigForPlanning;
-            const uiTarsModelVersion =
-              vlMode === 'vlm-ui-tars'
-                ? modelConfigForPlanning.uiTarsModelVersion
-                : undefined;
+            const { modelFamily } = modelConfigForPlanning;
 
             const actionSpace = this.getActionSpace();
             debug(
@@ -267,9 +311,13 @@ export class TaskExecutor {
               );
             }
 
-            const planResult = await (uiTarsModelVersion
+            const planImpl = isUITars(modelFamily)
               ? uiTarsPlanning
-              : plan)(param.userInstruction, {
+              : isAutoGLM(modelFamily)
+                ? autoGLMPlanning
+                : plan;
+
+            const planResult = await planImpl(param.userInstruction, {
               context: uiContext,
               actionContext: param.aiActContext,
               interfaceType: this.interface.interfaceType as InterfaceType,
@@ -278,17 +326,19 @@ export class TaskExecutor {
               conversationHistory: this.conversationHistory,
               includeBbox: includeBboxInPlanning,
               imagesIncludeCount,
+              deepThink,
             });
             debug('planResult', JSON.stringify(planResult, null, 2));
 
             const {
               actions,
+              thought,
               log,
-              more_actions_needed_by_instruction,
+              note,
               error,
               usage,
               rawResponse,
-              sleep,
+              reasoning_content,
             } = planResult;
 
             executorContext.task.log = {
@@ -296,23 +346,17 @@ export class TaskExecutor {
               rawResponse,
             };
             executorContext.task.usage = usage;
+            executorContext.task.reasoning_content = reasoning_content;
             executorContext.task.output = {
               actions: actions || [],
-              more_actions_needed_by_instruction,
               log,
+              thought,
+              note,
               yamlFlow: planResult.yamlFlow,
+              output: outputString,
+              shouldContinuePlanning: planResult.shouldContinuePlanning,
             };
             executorContext.uiContext = uiContext;
-
-            const finalActions = [...(actions || [])];
-
-            if (sleep) {
-              const timeNow = Date.now();
-              const timeRemaining = sleep - (timeNow - startTime);
-              if (timeRemaining > 0) {
-                finalActions.push(this.sleepPlan(timeRemaining));
-              }
-            }
 
             assert(!error, `Failed to continue: ${error}\n${log || ''}`);
 
@@ -358,13 +402,15 @@ export class TaskExecutor {
           this.conversationHistory.pendingFeedbackMessage,
         );
       }
-      let errorFlag = false;
+      // todo: set time string
+
       try {
-        await session.appendAndRun(executables.tasks);
+        const result = await session.appendAndRun(executables.tasks);
+        outputString = result?.output;
       } catch (error: any) {
-        errorFlag = true;
+        // errorFlag = true;
         errorCountInOnePlanningLoop++;
-        this.conversationHistory.pendingFeedbackMessage = `Error executing running tasks: ${error?.message || String(error)}`;
+        this.conversationHistory.pendingFeedbackMessage = `Time: ${getReadableTimeString()}, Error executing running tasks: ${error?.message || String(error)}`;
         debug(
           'error when executing running tasks, but continue to run if it is not too many errors:',
           error instanceof Error ? error.message : String(error),
@@ -377,15 +423,9 @@ export class TaskExecutor {
         return session.appendErrorPlan('Too many errors in one planning loop');
       }
 
-      // Check if task is complete
-      if (!planResult?.more_actions_needed_by_instruction) {
-        if (errorFlag) {
-          debug(
-            'more_actions_needed_by_instruction is false, but there are errors in one planning loop, continue to run',
-          );
-        } else {
-          break;
-        }
+      // // Check if task is complete
+      if (!planResult?.shouldContinuePlanning) {
+        break;
       }
 
       // Increment replan count for next iteration
@@ -397,18 +437,17 @@ export class TaskExecutor {
       }
 
       if (!this.conversationHistory.pendingFeedbackMessage) {
-        this.conversationHistory.pendingFeedbackMessage =
-          'I have finished the action previously planned.';
+        this.conversationHistory.pendingFeedbackMessage = `Time: ${getReadableTimeString()}, I have finished the action previously planned.`;
       }
     }
 
-    const finalResult = {
+    return {
       output: {
         yamlFlow,
+        output: outputString,
       },
       runner,
     };
-    return finalResult;
   }
 
   private createTypeQueryTask(
@@ -490,8 +529,9 @@ export class TaskExecutor {
           throw error;
         }
 
-        const { data, usage, thought, dump } = extractResult;
+        const { data, usage, thought, dump, reasoning_content } = extractResult;
         applyDump(dump);
+        task.reasoning_content = reasoning_content;
 
         let outputResult = data;
         if (ifTypeRestricted) {
@@ -572,15 +612,6 @@ export class TaskExecutor {
     };
   }
 
-  private sleepPlan(timeMs: number): PlanningAction<PlanningActionParamSleep> {
-    return {
-      type: 'Sleep',
-      param: {
-        timeMs,
-      },
-    };
-  }
-
   async taskForSleep(timeMs: number, _modelConfig: IModelConfig) {
     return this.taskBuilder.createSleepTask({
       timeMs,
@@ -599,7 +630,18 @@ export class TaskExecutor {
       taskTitleStr('WaitFor', description),
     );
     const runner = session.getRunner();
-    const { timeoutMs, checkIntervalMs } = opt;
+    const {
+      timeoutMs,
+      checkIntervalMs,
+      domIncluded,
+      screenshotIncluded,
+      ...restOpt
+    } = opt;
+    const serviceExtractOpt: ServiceExtractOption = {
+      domIncluded,
+      screenshotIncluded,
+      ...restOpt,
+    };
 
     assert(assertion, 'No assertion for waitFor');
     assert(timeoutMs, 'No timeoutMs for waitFor');
@@ -621,7 +663,7 @@ export class TaskExecutor {
         'WaitFor',
         textPrompt,
         modelConfig,
-        undefined,
+        serviceExtractOpt,
         multimodalPrompt,
       );
 
@@ -654,5 +696,39 @@ export class TaskExecutor {
     }
 
     return session.appendErrorPlan(`waitFor timeout: ${errorThought}`);
+  }
+}
+
+export async function withFileChooser<T>(
+  interfaceInstance: AbstractInterface,
+  fileChooserAccept: string[] | undefined,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (!fileChooserAccept?.length) {
+    return action();
+  }
+
+  if (!interfaceInstance.registerFileChooserListener) {
+    throw new Error(
+      `File upload is not supported on ${interfaceInstance.interfaceType}`,
+    );
+  }
+
+  const handler = async (chooser: FileChooserHandler) => {
+    await chooser.accept(fileChooserAccept);
+  };
+
+  const { dispose, getError } =
+    await interfaceInstance.registerFileChooserListener(handler);
+  try {
+    const result = await action();
+    // Check for errors that occurred during file chooser handling
+    const error = getError();
+    if (error) {
+      throw error;
+    }
+    return result;
+  } finally {
+    dispose();
   }
 }

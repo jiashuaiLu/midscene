@@ -9,6 +9,7 @@ export interface LocateOption {
   cacheable?: boolean; // user can set this param to false to disable the cache for a single agent api
   xpath?: string; // only available in web
   uiContext?: UIContext;
+  fileChooserAccept?: string | string[]; // file path(s) to upload when tapping triggers a file chooser
 }
 
 export interface ServiceExtractOption {
@@ -24,7 +25,6 @@ export interface ReferenceImage {
 
 export interface DetailedLocateParam extends LocateOption {
   prompt: TUserPrompt;
-  referenceImage?: ReferenceImage;
 }
 
 export type ScrollType =
@@ -194,21 +194,18 @@ export interface MidsceneYamlFlowItemAIAction {
   aiAct?: string;
   aiActionProgressTips?: string[];
   cacheable?: boolean;
-  _deepThink?: boolean;
   [key: string]: unknown;
 }
 
-export interface MidsceneYamlFlowItemAIAssert {
+export interface MidsceneYamlFlowItemAIAssert extends ServiceExtractOption {
   aiAssert: string;
   errorMessage?: string;
   name?: string;
-  [key: string]: unknown;
 }
 
-export interface MidsceneYamlFlowItemAIWaitFor {
+export interface MidsceneYamlFlowItemAIWaitFor extends ServiceExtractOption {
   aiWaitFor: string;
   timeout?: number;
-  [key: string]: unknown;
 }
 
 export interface MidsceneYamlFlowItemEvaluateJavaScript {

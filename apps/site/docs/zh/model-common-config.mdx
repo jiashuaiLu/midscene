@@ -61,6 +61,8 @@ import 'dotenv/config';
 
 ## 常用模型配置
 
+这里列出常用模型的配置，如需了解模型区别和选型，可查阅 [推荐的视觉模型](./model-strategy.html#recommended-vision-models)。
+
 ### 豆包 Seed 模型 {#doubao-seed-model}
 
 推荐使用 Doubao-Seed-1.6-Vision。
@@ -95,6 +97,52 @@ MIDSCENE_MODEL_API_KEY="......"
 MIDSCENE_MODEL_NAME="qwen-vl-max-latest"
 MIDSCENE_MODEL_FAMILY="qwen2.5-vl"
 ```
+
+### 智谱 GLM-V {#glm-v}
+
+智谱 GLM-V 是智谱 AI 推出的开源视觉模型。以 `GLM-4.6V` 为例：
+
+从 [Z.AI（国际）](https://z.ai/manage-apikey/apikey-list)或 [BigModel（国内）](https://bigmodel.cn/usercenter/proj-mgmt/apikeys)获取 API 密钥，然后设置：
+
+```bash
+MIDSCENE_MODEL_BASE_URL="https://open.bigmodel.cn/api/paas/v4" # 或 https://api.z.ai/api/paas/v4
+MIDSCENE_MODEL_API_KEY="......"
+MIDSCENE_MODEL_NAME="glm-4.6v"
+MIDSCENE_MODEL_FAMILY="glm-v"
+```
+
+**了解更多关于智谱 GLM-V**
+
+- Github: [https://github.com/zai-org/GLM-V](https://github.com/zai-org/GLM-V)
+- Hugging Face: [https://huggingface.co/zai-org/GLM-4.6V](https://huggingface.co/zai-org/GLM-4.6V)
+
+
+### 智谱 AutoGLM {#auto-glm}
+
+智谱 AutoGLM 是智谱 AI 推出的开源移动端 UI 自动化模型，模型尺寸为 9B。
+
+从 [Z.AI（国际）](https://z.ai/manage-apikey/apikey-list)或 [BigModel（国内）](https://bigmodel.cn/usercenter/proj-mgmt/apikeys)获取 API 密钥后，可以使用以下配置：
+
+```bash
+MIDSCENE_MODEL_BASE_URL="https://open.bigmodel.cn/api/paas/v4" # 或 https://api.z.ai/api/paas/v4
+MIDSCENE_MODEL_API_KEY="......"
+MIDSCENE_MODEL_NAME="autoglm-phone" # 模型名以平台实际模型名为准
+MIDSCENE_MODEL_FAMILY="auto-glm" # 或 "auto-glm-multilingual"
+```
+
+**关于 `MIDSCENE_MODEL_FAMILY` 配置**
+
+AutoGLM 提供了两个版本的模型，通过 `MIDSCENE_MODEL_FAMILY` 区分：
+
+- `auto-glm` - 对应 AutoGLM-Phone-9B，针对**中文环境**优化
+- `auto-glm-multilingual` - 对应 AutoGLM-Phone-9B-Multilingual，支持**英语等其他语言**场景
+
+请根据你的应用语言选择合适的版本。
+
+**了解更多关于智谱 AutoGLM**
+
+- Github: [https://github.com/zai-org/Open-AutoGLM](https://github.com/zai-org/Open-AutoGLM)
+- Hugging Face: [https://huggingface.co/zai-org/AutoGLM-Phone-9B](https://huggingface.co/zai-org/AutoGLM-Phone-9B)
 
 ### Gemini-3-Pro and Gemini-3-Flash {#gemini-3-pro}
 
@@ -142,7 +190,9 @@ MIDSCENE_MODEL_FAMILY="vlm-ui-tars-doubao-1.5"
 
 ## 多模型示例：GPT-5.1 用于 Planning/Insight，Qwen3-VL 负责视觉 {#gpt51-planning-insight-qwen3}
 
-使用 GPT-5.1 处理重度推理（Planning 和/或 Insight），让 Qwen3-VL 专注视觉定位。独立的 Planning 和 Insight 模型可按需启用，不需要同时开启。
+关于组合多个模型的更多信息，可查阅 [进阶：组合多个模型](./model-strategy.html#advanced-combining-multiple-models)。
+
+下面以 GPT-5.1 用于 Planning/Insight、Qwen3-VL 负责视觉为例。使用 GPT-5.1 处理重度推理（Planning 和/或 Insight），让 Qwen3-VL 专注视觉定位。独立的 Planning 和 Insight 模型可按需启用，不需要同时开启。
 
 ```bash
 # 默认视觉模型：Qwen3-VL

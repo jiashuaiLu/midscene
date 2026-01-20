@@ -88,7 +88,20 @@ export default class StaticPage implements AbstractInterface {
   }
 
   async screenshotBase64() {
-    const base64 = this.uiContext.screenshotBase64;
+    // Check legacy screenshotBase64 field first
+    let base64 = this.uiContext.screenshotBase64;
+
+    // If not found, try to get from screenshot field (new format)
+    if (!base64 && this.uiContext.screenshot) {
+      const screenshot = this.uiContext.screenshot;
+      // screenshot can be either a string (serialized) or ScreenshotItem object
+      if (typeof screenshot === 'string') {
+        base64 = screenshot;
+      } else if (screenshot && 'base64' in screenshot) {
+        base64 = screenshot.base64;
+      }
+    }
+
     if (!base64) {
       throw new Error('screenshot base64 is empty');
     }

@@ -1,4 +1,4 @@
-import { TaskRunner } from '@/index';
+import { ScreenshotItem, TaskRunner } from '@/index';
 import type {
   ExecutionTaskActionApply,
   ExecutionTaskInsightLocate,
@@ -10,15 +10,12 @@ import { fakeService } from 'tests/utils';
 import { describe, expect, it, vi } from 'vitest';
 
 const insightFindTask = (shouldThrow?: boolean) => {
-  const insight = fakeService('test-task-runner');
-
   const insightFindTask: ExecutionTaskPlanningLocateApply = {
     type: 'Planning',
     subType: 'Locate',
     param: {
       prompt: 'test',
     },
-    locate: null,
     async executor(param, taskContext) {
       if (shouldThrow) {
         const { task } = taskContext;
@@ -26,6 +23,7 @@ const insightFindTask = (shouldThrow?: boolean) => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         throw new Error('test-error');
       }
+      const insight = fakeService('test-task-runner');
       const { element, dump: insightDump } = await insight.locate(
         {
           prompt: param.prompt,
@@ -35,7 +33,6 @@ const insightFindTask = (shouldThrow?: boolean) => {
           modelName: 'mock-model',
           modelDescription: 'mock-model-description',
           intent: 'default',
-          from: 'legacy-env',
         },
       );
       return {
@@ -52,12 +49,14 @@ const insightFindTask = (shouldThrow?: boolean) => {
   return insightFindTask;
 };
 
-const fakeUIContextBuilder = async () =>
-  ({
-    screenshotBase64: '',
+const fakeUIContextBuilder = () => {
+  const screenshot = ScreenshotItem.create('');
+  return {
+    screenshot,
     tree: { node: null, children: [] },
     size: { width: 0, height: 0 },
-  }) as unknown as UIContext;
+  } as unknown as UIContext;
+};
 
 describe(
   'task-runner',
@@ -76,13 +75,11 @@ describe(
       const actionTask: ExecutionTaskActionApply = {
         type: 'Action Space',
         param: taskParam,
-        locate: null,
         executor: tapperFn,
       };
       const actionTask2: ExecutionTaskActionApply = {
         type: 'Action Space',
         param: taskParam,
-        locate: null,
         executor: async () => {
           return {
             output: flushResultData,
@@ -130,7 +127,6 @@ describe(
           action: 'tap',
           element: 'previous',
         },
-        locate: null,
         executor: async () => {
           // delay 500
           await new Promise((resolve) => setTimeout(resolve, 500));
@@ -224,12 +220,14 @@ describe(
     });
 
     it('subTask - reuse previous uiContext', async () => {
-      const baseUIContext = (id: string) =>
-        ({
-          screenshotBase64: id,
+      const baseUIContext = (id: string) => {
+        const screenshot = ScreenshotItem.create(id);
+        return {
+          screenshot,
           tree: { node: null, children: [] },
           size: { width: 0, height: 0 },
-        }) as unknown as UIContext;
+        } as unknown as UIContext;
+      };
 
       const firstContext = baseUIContext('first');
       const screenshotContext = baseUIContext('screenshot');
@@ -272,7 +270,7 @@ describe(
       const uiContextBuilder = vi
         .fn<[], Promise<UIContext>>()
         .mockResolvedValue({
-          screenshotBase64: '',
+          screenshot: ScreenshotItem.create(''),
           tree: { node: null, children: [] },
           size: { width: 0, height: 0 },
         } as unknown as UIContext);
@@ -297,6 +295,67 @@ describe(
       await expect(runner.flush()).rejects.toThrowError(
         'task runner is in error state',
       );
+    });
+
+    it('error message should be from the last failed task when using allowWhenError', async () => {
+      const runner = new TaskRunner('error-message-test', fakeUIContextBuilder);
+
+      // First task - will fail with "first-error"
+      const firstTask: ExecutionTaskActionApply = {
+        type: 'Action Space',
+        executor: async () => {
+          throw new Error('first-error');
+        },
+      };
+
+      // Second task - will succeed
+      const secondTask: ExecutionTaskActionApply = {
+        type: 'Action Space',
+        executor: async () => {
+          return { output: 'success' };
+        },
+      };
+
+      // Third task - will fail with "third-error"
+      const thirdTask: ExecutionTaskActionApply = {
+        type: 'Action Space',
+        executor: async () => {
+          throw new Error('third-error');
+        },
+      };
+
+      // Add first task and let it fail
+      await runner.append(firstTask);
+      await expect(runner.flush()).rejects.toThrowError('first-error');
+      expect(runner.status).toBe('error');
+      expect(runner.tasks[0].status).toBe('failed');
+
+      // Continue with allowWhenError, add second task (success)
+      await runner.append(secondTask, { allowWhenError: true });
+      await runner.flush({ allowWhenError: true });
+      expect(runner.status).toBe('completed');
+      expect(runner.tasks[1].status).toBe('finished');
+
+      // Add third task and let it fail
+      await runner.append(thirdTask);
+      let caughtError: Error | undefined;
+      try {
+        await runner.flush();
+      } catch (error) {
+        caughtError = error as Error;
+      }
+
+      // The error message should be from the LAST failed task (third-error), not the first one
+      expect(caughtError).toBeDefined();
+      expect(caughtError?.message).toContain('third-error');
+      expect(caughtError?.message).not.toContain('first-error');
+      expect(runner.tasks[2].status).toBe('failed');
+      expect(runner.tasks[2].errorMessage).toBe('third-error');
+
+      // latestErrorTask should return the third task, not the first one
+      const latestError = runner.latestErrorTask();
+      expect(latestError).toBe(runner.tasks[2]);
+      expect(latestError?.errorMessage).toBe('third-error');
     });
   },
 );

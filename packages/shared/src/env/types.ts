@@ -27,6 +27,8 @@ export const MIDSCENE_MODEL_BASE_URL = 'MIDSCENE_MODEL_BASE_URL';
 export const MIDSCENE_MODEL_MAX_TOKENS = 'MIDSCENE_MODEL_MAX_TOKENS';
 export const MIDSCENE_MODEL_TIMEOUT = 'MIDSCENE_MODEL_TIMEOUT';
 export const MIDSCENE_MODEL_TEMPERATURE = 'MIDSCENE_MODEL_TEMPERATURE';
+export const MIDSCENE_MODEL_RETRY_COUNT = 'MIDSCENE_MODEL_RETRY_COUNT';
+export const MIDSCENE_MODEL_RETRY_INTERVAL = 'MIDSCENE_MODEL_RETRY_INTERVAL';
 
 /**
  * @deprecated Use MIDSCENE_MODEL_API_KEY instead. This is kept for backward compatibility.
@@ -96,6 +98,11 @@ export const MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON =
 export const MIDSCENE_INSIGHT_MODEL_TIMEOUT = 'MIDSCENE_INSIGHT_MODEL_TIMEOUT';
 export const MIDSCENE_INSIGHT_MODEL_TEMPERATURE =
   'MIDSCENE_INSIGHT_MODEL_TEMPERATURE';
+export const MIDSCENE_INSIGHT_MODEL_RETRY_COUNT =
+  'MIDSCENE_INSIGHT_MODEL_RETRY_COUNT';
+export const MIDSCENE_INSIGHT_MODEL_RETRY_INTERVAL =
+  'MIDSCENE_INSIGHT_MODEL_RETRY_INTERVAL';
+export const MIDSCENE_INSIGHT_MODEL_FAMILY = 'MIDSCENE_INSIGHT_MODEL_FAMILY';
 
 // PLANNING
 export const MIDSCENE_PLANNING_MODEL_NAME = 'MIDSCENE_PLANNING_MODEL_NAME';
@@ -113,6 +120,11 @@ export const MIDSCENE_PLANNING_MODEL_TIMEOUT =
   'MIDSCENE_PLANNING_MODEL_TIMEOUT';
 export const MIDSCENE_PLANNING_MODEL_TEMPERATURE =
   'MIDSCENE_PLANNING_MODEL_TEMPERATURE';
+export const MIDSCENE_PLANNING_MODEL_RETRY_COUNT =
+  'MIDSCENE_PLANNING_MODEL_RETRY_COUNT';
+export const MIDSCENE_PLANNING_MODEL_RETRY_INTERVAL =
+  'MIDSCENE_PLANNING_MODEL_RETRY_INTERVAL';
+export const MIDSCENE_PLANNING_MODEL_FAMILY = 'MIDSCENE_PLANNING_MODEL_FAMILY';
 export const MIDSCENE_MODEL_FAMILY = 'MIDSCENE_MODEL_FAMILY';
 
 /**
@@ -141,6 +153,7 @@ export const BOOLEAN_ENV_KEYS = [
 ] as const;
 
 export const NUMBER_ENV_KEYS = [
+  MIDSCENE_MODEL_MAX_TOKENS,
   MIDSCENE_CACHE_MAX_FILENAME_LENGTH,
   MIDSCENE_REPLANNING_CYCLE_LIMIT,
 ] as const;
@@ -187,6 +200,8 @@ export const MODEL_ENV_KEYS = [
   MIDSCENE_MODEL_HTTP_PROXY,
   MIDSCENE_MODEL_TIMEOUT,
   MIDSCENE_MODEL_TEMPERATURE,
+  MIDSCENE_MODEL_RETRY_COUNT,
+  MIDSCENE_MODEL_RETRY_INTERVAL,
   MIDSCENE_USE_VLM_UI_TARS,
   MIDSCENE_USE_QWEN_VL,
   MIDSCENE_USE_QWEN3_VL,
@@ -208,6 +223,9 @@ export const MODEL_ENV_KEYS = [
   MIDSCENE_INSIGHT_MODEL_INIT_CONFIG_JSON,
   MIDSCENE_INSIGHT_MODEL_TIMEOUT,
   MIDSCENE_INSIGHT_MODEL_TEMPERATURE,
+  MIDSCENE_INSIGHT_MODEL_RETRY_COUNT,
+  MIDSCENE_INSIGHT_MODEL_RETRY_INTERVAL,
+  MIDSCENE_INSIGHT_MODEL_FAMILY,
   // PLANNING
   MIDSCENE_PLANNING_MODEL_NAME,
   MIDSCENE_PLANNING_MODEL_SOCKS_PROXY,
@@ -217,6 +235,9 @@ export const MODEL_ENV_KEYS = [
   MIDSCENE_PLANNING_MODEL_INIT_CONFIG_JSON,
   MIDSCENE_PLANNING_MODEL_TIMEOUT,
   MIDSCENE_PLANNING_MODEL_TEMPERATURE,
+  MIDSCENE_PLANNING_MODEL_RETRY_COUNT,
+  MIDSCENE_PLANNING_MODEL_RETRY_INTERVAL,
+  MIDSCENE_PLANNING_MODEL_FAMILY,
   MIDSCENE_MODEL_FAMILY,
 ] as const;
 
@@ -237,14 +258,10 @@ export type TVlModeValues =
   | 'gemini'
   | 'vlm-ui-tars'
   | 'vlm-ui-tars-doubao'
-  | 'vlm-ui-tars-doubao-1.5';
-
-export type TVlModeTypes =
-  | 'qwen2.5-vl'
-  | 'qwen3-vl'
-  | 'doubao-vision'
-  | 'gemini'
-  | 'vlm-ui-tars';
+  | 'vlm-ui-tars-doubao-1.5'
+  | 'glm-v'
+  | 'auto-glm'
+  | 'auto-glm-multilingual';
 
 export const VL_MODE_RAW_VALID_VALUES: TVlModeValues[] = [
   'doubao-vision',
@@ -254,6 +271,9 @@ export const VL_MODE_RAW_VALID_VALUES: TVlModeValues[] = [
   'vlm-ui-tars',
   'vlm-ui-tars-doubao',
   'vlm-ui-tars-doubao-1.5',
+  'glm-v',
+  'auto-glm',
+  'auto-glm-multilingual',
 ];
 
 /**
@@ -264,10 +284,11 @@ export const VL_MODE_RAW_VALID_VALUES: TVlModeValues[] = [
  * - 'qwen2.5-vl' is Qwen 2.5
  * - 'qwen3-vl' is Qwen 3
  */
-export type TModelFamily = TVlModeValues;
+export type TModelFamily = TVlModeValues | 'gpt-5';
 
-export const MODEL_FAMILY_VALUES: TVlModeValues[] = [
+export const MODEL_FAMILY_VALUES: TModelFamily[] = [
   ...VL_MODE_RAW_VALID_VALUES,
+  'gpt-5',
 ];
 
 export interface IModelConfigForInsight {
@@ -284,6 +305,8 @@ export interface IModelConfigForInsight {
   [MIDSCENE_INSIGHT_MODEL_TIMEOUT]?: string;
   // temperature
   [MIDSCENE_INSIGHT_MODEL_TEMPERATURE]?: string;
+  // model family
+  [MIDSCENE_INSIGHT_MODEL_FAMILY]?: TModelFamily;
 }
 
 export interface IModelConfigForPlanning {
@@ -300,6 +323,8 @@ export interface IModelConfigForPlanning {
   [MIDSCENE_PLANNING_MODEL_TIMEOUT]?: string;
   // temperature
   [MIDSCENE_PLANNING_MODEL_TEMPERATURE]?: string;
+  // model family
+  [MIDSCENE_PLANNING_MODEL_FAMILY]?: TModelFamily;
 }
 
 /**
@@ -316,6 +341,7 @@ export interface IModelConfigForPlanning {
  *   - 'vlm-ui-tars'
  *   - 'vlm-ui-tars-doubao'
  *   - 'vlm-ui-tars-doubao-1.5'
+ *   - 'glm-v'
  */
 export interface IModelConfigForDefault {
   // model name
@@ -328,7 +354,7 @@ export interface IModelConfigForDefault {
   [MIDSCENE_MODEL_API_KEY]?: string;
   [MIDSCENE_MODEL_INIT_CONFIG_JSON]?: string;
   // extra
-  [MIDSCENE_MODEL_FAMILY]?: TVlModeValues;
+  [MIDSCENE_MODEL_FAMILY]?: TModelFamily;
   // temperature
   [MIDSCENE_MODEL_TEMPERATURE]?: string;
 }
@@ -422,11 +448,20 @@ export interface IModelConfig {
    */
   temperature?: number;
   /**
-   * - vlModeRaw: exists only in non-legacy logic. value can be 'doubao-vision', 'gemini', 'qwen2.5-vl', 'vlm-ui-tars', 'vlm-ui-tars-doubao', 'vlm-ui-tars-doubao-1.5'
-   * - vlMode: based on the results of the vlModoRaw classification，value can be 'doubao-vision', 'gemini', 'qwen2.5-vl', 'vlm-ui-tars'
+   * Number of retries when AI call fails.
+   * Default is 1 (retry once after failure).
    */
-  vlModeRaw?: string;
-  vlMode?: TVlModeTypes;
+  retryCount?: number;
+  /**
+   * Interval between retries in milliseconds.
+   * Default is 2000.
+   */
+  retryInterval?: number;
+  /**
+   * Model family - unified model configuration
+   * Maps directly to model families like 'qwen2.5-vl', 'qwen3-vl', 'doubao-vision', etc.
+   */
+  modelFamily?: TModelFamily;
   uiTarsModelVersion?: UITarsModelVersion;
   modelDescription: string;
   /**

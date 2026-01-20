@@ -6,13 +6,15 @@ import {
   type AgentOpt,
   type AgentWaitForOpt,
   type CacheConfig,
+  type DeepThinkOption,
+  type DetailedLocateParam,
   type DeviceAction,
-  type ExecutionDump,
+  ExecutionDump,
   type ExecutionRecorderItem,
   type ExecutionTask,
   type ExecutionTaskLog,
   type ExecutionTaskPlanning,
-  type GroupedActionDump,
+  GroupedActionDump,
   type LocateOption,
   type LocateResultElement,
   type LocateValidatorResult,
@@ -21,6 +23,7 @@ import {
   type OnTaskStartTip,
   type PlanningAction,
   type Rect,
+  ScreenshotItem,
   type ScrollParam,
   Service,
   type ServiceAction,
@@ -35,6 +38,7 @@ export type TestStatus =
   | 'timedOut'
   | 'skipped'
   | 'interrupted';
+import { isAutoGLM, isUITars } from '@/ai-model/auto-glm/util';
 import yaml from 'js-yaml';
 
 import {
@@ -42,7 +46,6 @@ import {
   groupedActionDumpFileExt,
   processCacheConfig,
   reportHTMLContent,
-  stringifyDumpData,
   writeLogFile,
 } from '@/utils';
 import {
@@ -51,6 +54,8 @@ import {
   parseYamlScript,
 } from '../yaml/index';
 
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { AbstractInterface } from '@/device';
 import type { TaskRunner } from '@/task-runner';
 import {
@@ -63,10 +68,14 @@ import {
 import { imageInfoOfBase64, resizeImgBase64 } from '@midscene/shared/img';
 import { getDebug } from '@midscene/shared/logger';
 import { assert } from '@midscene/shared/utils';
-import { defineActionAssert } from '../device';
-// import type { AndroidDeviceInputOpt } from '../device';
+import { defineActionAssert, defineActionFinalize } from '../device';
 import { TaskCache } from './task-cache';
-import { TaskExecutionError, TaskExecutor, locatePlanForLocate } from './tasks';
+import {
+  TaskExecutionError,
+  TaskExecutor,
+  locatePlanForLocate,
+  withFileChooser,
+} from './tasks';
 import { locateParamStr, paramStr, taskTitleStr, typeStr } from './ui-utils';
 import {
   commonContextParser,
@@ -135,9 +144,12 @@ const normalizeScrollType = (
 
 const defaultReplanningCycleLimit = 20;
 const defaultVlmUiTarsReplanningCycleLimit = 40;
+const defaultAutoGlmReplanningCycleLimit = 100;
 
 export type AiActOptions = {
   cacheable?: boolean;
+  fileChooserAccept?: string | string[];
+  deepThink?: DeepThinkOption;
 };
 
 export class Agent<
@@ -217,6 +229,8 @@ export class Agent<
 
   private executionDumpIndexByRunner = new WeakMap<TaskRunner, number>();
 
+  private fullActionSpace: DeviceAction[];
+
   // @deprecated use .interface instead
   get page() {
     return this.interface;
@@ -256,9 +270,9 @@ export class Agent<
         );
 
         debug('will get image info of base64');
-        const { width: screenshotWidth } = await imageInfoOfBase64(
-          context.screenshotBase64,
-        );
+        const screenshotBase64 = context.screenshot.base64;
+        const { width: screenshotWidth } =
+          await imageInfoOfBase64(screenshotBase64);
         debug('image info of base64 done');
 
         assert(
@@ -294,21 +308,20 @@ export class Agent<
       return this.opts.replanningCycleLimit;
     }
 
-    return modelConfigForPlanning.vlMode === 'vlm-ui-tars'
+    return isUITars(modelConfigForPlanning.modelFamily)
       ? defaultVlmUiTarsReplanningCycleLimit
-      : defaultReplanningCycleLimit;
+      : isAutoGLM(modelConfigForPlanning.modelFamily)
+        ? defaultAutoGlmReplanningCycleLimit
+        : defaultReplanningCycleLimit;
   }
 
   constructor(interfaceInstance: InterfaceType, opts?: AgentOpt) {
     this.interface = interfaceInstance;
 
-    const envConfig = globalConfigManager.getAllEnvConfig();
-    const envReplanningCycleLimitRaw =
-      envConfig[MIDSCENE_REPLANNING_CYCLE_LIMIT];
     const envReplanningCycleLimit =
-      envReplanningCycleLimitRaw !== undefined
-        ? Number(envReplanningCycleLimitRaw)
-        : undefined;
+      globalConfigManager.getEnvConfigValueAsNumber(
+        MIDSCENE_REPLANNING_CYCLE_LIMIT,
+      );
 
     this.opts = Object.assign(
       {
@@ -368,13 +381,17 @@ export class Agent<
     }
 
     const baseActionSpace = this.interface.actionSpace();
-    const fullActionSpace = [...baseActionSpace, defineActionAssert()];
+    this.fullActionSpace = [
+      ...baseActionSpace,
+      defineActionAssert(),
+      defineActionFinalize(),
+    ];
 
     this.taskExecutor = new TaskExecutor(this.interface, this.service, {
       taskCache: this.taskCache,
       onTaskStart: this.callbackOnTaskStartTip.bind(this),
       replanningCycleLimit: this.opts.replanningCycleLimit,
-      actionSpace: fullActionSpace,
+      actionSpace: this.fullActionSpace,
       hooks: {
         onTaskUpdate: (runner) => {
           const executionDump = runner.dump();
@@ -401,9 +418,7 @@ export class Agent<
   }
 
   async getActionSpace(): Promise<DeviceAction[]> {
-    const commonAssertionAction = defineActionAssert();
-
-    return [...this.interface.actionSpace(), commonAssertionAction];
+    return this.fullActionSpace;
   }
 
   async getUIContext(action?: ServiceAction): Promise<UIContext> {
@@ -440,10 +455,12 @@ export class Agent<
       const targetWidth = Math.round(context.size.width);
       const targetHeight = Math.round(context.size.height);
       debug(`Resizing screenshot to ${targetWidth}x${targetHeight}`);
-      context.screenshotBase64 = await resizeImgBase64(
-        context.screenshotBase64,
-        { width: targetWidth, height: targetHeight },
-      );
+      const currentScreenshotBase64 = context.screenshot.base64;
+      const resizedBase64 = await resizeImgBase64(currentScreenshotBase64, {
+        width: targetWidth,
+        height: targetHeight,
+      });
+      context.screenshot = ScreenshotItem.create(resizedBase64);
     } else {
       debug(`screenshot scale=${computedScreenshotScale}`);
     }
@@ -473,13 +490,13 @@ export class Agent<
   }
 
   resetDump() {
-    this.dump = {
+    this.dump = new GroupedActionDump({
       sdkVersion: getVersion(),
       groupName: this.opts.groupName!,
       groupDescription: this.opts.groupDescription,
       executions: [],
       modelBriefs: [],
-    };
+    });
     this.executionDumpIndexByRunner = new WeakMap<TaskRunner, number>();
 
     return this.dump;
@@ -507,7 +524,7 @@ export class Agent<
     // update dump info
     this.dump.groupName = this.opts.groupName!;
     this.dump.groupDescription = this.opts.groupDescription;
-    return stringifyDumpData(this.dump);
+    return this.dump.serialize();
   }
 
   reportHTMLString() {
@@ -588,13 +605,22 @@ export class Agent<
     return output;
   }
 
-  async aiTap(locatePrompt: TUserPrompt, opt?: LocateOption) {
+  async aiTap(
+    locatePrompt: TUserPrompt,
+    opt?: LocateOption & { fileChooserAccept?: string | string[] },
+  ) {
     assert(locatePrompt, 'missing locate prompt for tap');
 
     const detailedLocateParam = buildDetailedLocateParam(locatePrompt, opt);
 
-    return this.callActionInActionSpace('Tap', {
-      locate: detailedLocateParam,
+    const fileChooserAccept = opt?.fileChooserAccept
+      ? this.normalizeFileInput(opt.fileChooserAccept)
+      : undefined;
+
+    return withFileChooser(this.interface, fileChooserAccept, async () => {
+      return this.callActionInActionSpace('Tap', {
+        locate: detailedLocateParam,
+      });
     });
   }
 
@@ -633,7 +659,7 @@ export class Agent<
     locatePrompt: TUserPrompt,
     opt: LocateOption & { value: string | number } & {
       autoDismissKeyboard?: boolean;
-    } & { mode?: 'replace' | 'clear' | 'append' },
+    } & { mode?: 'replace' | 'clear' | 'typeOnly' | 'append' },
   ): Promise<any>;
 
   // Legacy signature - deprecated
@@ -644,7 +670,7 @@ export class Agent<
     value: string | number,
     locatePrompt: TUserPrompt,
     opt?: LocateOption & { autoDismissKeyboard?: boolean } & {
-      mode?: 'replace' | 'clear' | 'append';
+      mode?: 'replace' | 'clear' | 'typeOnly' | 'append';
     }, // AndroidDeviceInputOpt &
   ): Promise<any>;
 
@@ -655,7 +681,7 @@ export class Agent<
       | TUserPrompt
       | (LocateOption & { value: string | number } & {
           autoDismissKeyboard?: boolean;
-        } & { mode?: 'replace' | 'clear' | 'append' }) // AndroidDeviceInputOpt &
+        } & { mode?: 'replace' | 'clear' | 'typeOnly' | 'append' }) // AndroidDeviceInputOpt &
       | undefined,
     optOrUndefined?: LocateOption, // AndroidDeviceInputOpt &
   ) {
@@ -664,7 +690,7 @@ export class Agent<
     let opt:
       | (LocateOption & { value: string | number } & {
           autoDismissKeyboard?: boolean;
-        } & { mode?: 'replace' | 'clear' | 'append' }) // AndroidDeviceInputOpt &
+        } & { mode?: 'replace' | 'clear' | 'typeOnly' | 'append' }) // AndroidDeviceInputOpt &
       | undefined;
 
     // Check if using new signature (first param is locatePrompt, second has value)
@@ -845,84 +871,103 @@ export class Agent<
     });
   }
 
-  async aiAct(taskPrompt: string, opt?: AiActOptions) {
-    const modelConfigForPlanning =
-      this.modelConfigManager.getModelConfig('planning');
-    const defaultIntentModelConfig =
-      this.modelConfigManager.getModelConfig('default');
+  async aiAct(
+    taskPrompt: string,
+    opt?: AiActOptions,
+  ): Promise<string | undefined> {
+    const fileChooserAccept = opt?.fileChooserAccept
+      ? this.normalizeFileInput(opt.fileChooserAccept)
+      : undefined;
 
-    const includeBboxInPlanning =
-      modelConfigForPlanning.modelName === defaultIntentModelConfig.modelName &&
-      modelConfigForPlanning.openaiBaseURL ===
-        defaultIntentModelConfig.openaiBaseURL;
-    debug('setting includeBboxInPlanning to', includeBboxInPlanning);
+    const runAiAct = async () => {
+      const modelConfigForPlanning =
+        this.modelConfigManager.getModelConfig('planning');
+      const defaultIntentModelConfig =
+        this.modelConfigManager.getModelConfig('default');
 
-    const cacheable = opt?.cacheable;
-    const replanningCycleLimit = this.resolveReplanningCycleLimit(
-      modelConfigForPlanning,
-    );
-    // if vlm-ui-tars, plan cache is not used
-    const isVlmUiTars = modelConfigForPlanning.vlMode === 'vlm-ui-tars';
-    const matchedCache =
-      isVlmUiTars || cacheable === false
+      const includeBboxInPlanning =
+        modelConfigForPlanning.modelName ===
+          defaultIntentModelConfig.modelName &&
+        modelConfigForPlanning.openaiBaseURL ===
+          defaultIntentModelConfig.openaiBaseURL;
+      debug('setting includeBboxInPlanning to', includeBboxInPlanning);
+
+      const cacheable = opt?.cacheable;
+      const deepThink = opt?.deepThink === 'unset' ? undefined : opt?.deepThink;
+      const replanningCycleLimit = this.resolveReplanningCycleLimit(
+        modelConfigForPlanning,
+      );
+      // if vlm-ui-tars or auto-glm, plan cache is not used
+      const isVlmUiTars = isUITars(modelConfigForPlanning.modelFamily);
+      const isAutoGlm = isAutoGLM(modelConfigForPlanning.modelFamily);
+      const matchedCache =
+        isVlmUiTars || isAutoGlm || cacheable === false
+          ? undefined
+          : this.taskCache?.matchPlanCache(taskPrompt);
+      if (
+        matchedCache &&
+        this.taskCache?.isCacheResultUsed &&
+        matchedCache.cacheContent?.yamlWorkflow?.trim()
+      ) {
+        // log into report file
+        await this.taskExecutor.loadYamlFlowAsPlanning(
+          taskPrompt,
+          matchedCache.cacheContent.yamlWorkflow,
+        );
+
+        debug('matched cache, will call .runYaml to run the action');
+        const yaml = matchedCache.cacheContent.yamlWorkflow;
+        await this.runYaml(yaml);
+        return;
+      }
+
+      // If cache matched but yamlWorkflow is empty, fall through to normal execution
+
+      const useDeepThink = (this.opts as any)?._deepThink;
+      if (useDeepThink) {
+        debug('using deep think planning settings');
+      }
+      const imagesIncludeCount: number | undefined = useDeepThink
         ? undefined
-        : this.taskCache?.matchPlanCache(taskPrompt);
-    if (
-      matchedCache &&
-      this.taskCache?.isCacheResultUsed &&
-      matchedCache.cacheContent?.yamlWorkflow?.trim()
-    ) {
-      // log into report file
-      await this.taskExecutor.loadYamlFlowAsPlanning(
+        : 2;
+      const { output: actionOutput } = await this.taskExecutor.action(
         taskPrompt,
-        matchedCache.cacheContent.yamlWorkflow,
+        modelConfigForPlanning,
+        defaultIntentModelConfig,
+        includeBboxInPlanning,
+        this.aiActContext,
+        cacheable,
+        replanningCycleLimit,
+        imagesIncludeCount,
+        deepThink,
+        fileChooserAccept,
       );
 
-      debug('matched cache, will call .runYaml to run the action');
-      const yaml = matchedCache.cacheContent.yamlWorkflow;
-      return this.runYaml(yaml);
-    }
-
-    // If cache matched but yamlWorkflow is empty, fall through to normal execution
-
-    const useDeepThink = (this.opts as any)?._deepThink;
-    if (useDeepThink) {
-      debug('using deep think planning settings');
-    }
-    const imagesIncludeCount: number | undefined = useDeepThink ? undefined : 2;
-    const { output } = await this.taskExecutor.action(
-      taskPrompt,
-      modelConfigForPlanning,
-      defaultIntentModelConfig,
-      includeBboxInPlanning,
-      this.aiActContext,
-      cacheable,
-      replanningCycleLimit,
-      imagesIncludeCount,
-    );
-
-    // update cache
-    if (this.taskCache && output?.yamlFlow && cacheable !== false) {
-      const yamlContent: MidsceneYamlScript = {
-        tasks: [
+      // update cache
+      if (this.taskCache && actionOutput?.yamlFlow && cacheable !== false) {
+        const yamlContent: MidsceneYamlScript = {
+          tasks: [
+            {
+              name: taskPrompt,
+              flow: actionOutput.yamlFlow,
+            },
+          ],
+        };
+        const yamlFlowStr = yaml.dump(yamlContent);
+        this.taskCache.updateOrAppendCacheRecord(
           {
-            name: taskPrompt,
-            flow: output.yamlFlow,
+            type: 'plan',
+            prompt: taskPrompt,
+            yamlWorkflow: yamlFlowStr,
           },
-        ],
-      };
-      const yamlFlowStr = yaml.dump(yamlContent);
-      this.taskCache.updateOrAppendCacheRecord(
-        {
-          type: 'plan',
-          prompt: taskPrompt,
-          yamlWorkflow: yamlFlowStr,
-        },
-        matchedCache,
-      );
-    }
+          matchedCache,
+        );
+      }
 
-    return output;
+      return actionOutput?.output;
+    };
+
+    return await runAiAct();
   }
 
   /**
@@ -1206,6 +1251,7 @@ export class Agent<
     await this.taskExecutor.waitFor(
       assertion,
       {
+        ...opt,
         timeoutMs: opt?.timeoutMs || 15 * 1000,
         checkIntervalMs: opt?.checkIntervalMs || 3 * 1000,
       },
@@ -1304,13 +1350,14 @@ export class Agent<
   ) {
     // 1. screenshot
     const base64 = await this.interface.screenshotBase64();
+    const screenshot = ScreenshotItem.create(base64);
     const now = Date.now();
     // 2. build recorder
     const recorder: ExecutionRecorderItem[] = [
       {
         type: 'screenshot',
         ts: now,
-        screenshot: base64,
+        screenshot,
       },
     ];
     // 3. build ExecutionTaskLog
@@ -1330,12 +1377,12 @@ export class Agent<
       executor: async () => {},
     };
     // 4. build ExecutionDump
-    const executionDump: ExecutionDump = {
+    const executionDump = new ExecutionDump({
       logTime: now,
       name: `Log - ${title || 'untitled'}`,
       description: opt?.content || '',
       tasks: [task],
-    };
+    });
     // 5. append to execution dump
     this.appendExecutionDump(executionDump);
 
@@ -1470,6 +1517,21 @@ export class Agent<
     }
 
     return null;
+  }
+
+  private normalizeFilePaths(files: string[]): string[] {
+    return files.map((file) => {
+      const absolutePath = resolve(file);
+      if (!existsSync(absolutePath)) {
+        throw new Error(`File not found: ${file}`);
+      }
+      return absolutePath;
+    });
+  }
+
+  private normalizeFileInput(files: string | string[]): string[] {
+    const filesArray = Array.isArray(files) ? files : [files];
+    return this.normalizeFilePaths(filesArray);
   }
 
   /**

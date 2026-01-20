@@ -1,4 +1,9 @@
-import type { DeviceAction, ExecutionDump } from '@midscene/core';
+import type {
+  DeviceAction,
+  ExecutionDump,
+  IExecutionDump,
+  IGroupedActionDump,
+} from '@midscene/core';
 import { paramStr, typeStr } from '@midscene/core/agent';
 import { useCallback } from 'react';
 import { useEnvConfig } from '../store/store';
@@ -43,7 +48,9 @@ function buildProgressContent(task: any): string {
  * @param dump - The execution dump containing tasks and their usage information
  * @returns A grouped action dump with model briefs and executions array
  */
-function wrapExecutionDumpForReplay(dump: ExecutionDump) {
+function wrapExecutionDumpForReplay(
+  dump: ExecutionDump | IExecutionDump,
+): IGroupedActionDump {
   const modelBriefsSet = new Set<string>();
 
   if (dump?.tasks && Array.isArray(dump.tasks)) {
@@ -206,7 +213,8 @@ export function usePlaygroundExecution(
           if (resultObj.error) result.error = formatError(resultObj.error);
 
           // If result was wrapped, extract the actual result
-          if (resultObj.result !== undefined) {
+          // Handle both defined values and undefined (e.g., from aiWaitFor)
+          if ('result' in resultObj) {
             result.result = resultObj.result;
           }
         }
@@ -365,6 +373,20 @@ export function usePlaygroundExecution(
 
         // Add result item if we have execution data
         if (executionData && (executionData.dump || executionData.reportHTML)) {
+          // Generate replayScriptsInfo from dump, just like in handleRun
+          let replayInfo = null;
+          let counter = replayCounter;
+
+          if (
+            executionData.dump?.tasks &&
+            Array.isArray(executionData.dump.tasks)
+          ) {
+            const groupedDump = wrapExecutionDumpForReplay(executionData.dump);
+            replayInfo = allScriptsFromDump(groupedDump);
+            setReplayCounter((c) => c + 1);
+            counter = replayCounter + 1;
+          }
+
           const resultItem: InfoListItem = {
             id: `stop-result-${thisRunningId}`,
             type: 'result',
@@ -378,7 +400,8 @@ export function usePlaygroundExecution(
             },
             loading: false,
             verticalMode,
-            replayCounter,
+            replayScriptsInfo: replayInfo,
+            replayCounter: counter,
           };
           setInfoList((prev) => [...prev, resultItem]);
         } else {
