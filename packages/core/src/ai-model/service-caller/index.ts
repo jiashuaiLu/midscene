@@ -364,11 +364,7 @@ export async function callAI(
       }
       content = accumulated;
       debugProfileStats(
-<<<<<<< HEAD
-        `streaming model, ${modelName}, mode, ${vlMode || 'default'}, cost-ms, ${timeCost}, temperature, ${temperature ?? ''}`,
-=======
         `streaming model, ${modelName}, mode, ${modelFamily || 'default'}, cost-ms, ${timeCost}, temperature, ${temperature ?? ''}`,
->>>>>>> 197021a22677c057594e540cebb0d692775c6286
       );
     } else {
       // Non-streaming with retry logic
@@ -376,13 +372,7 @@ export async function callAI(
       const retryInterval = modelConfig.retryInterval ?? 2000;
       const maxAttempts = retryCount + 1; // retryCount=1 means 2 total attempts (1 initial + 1 retry)
 
-<<<<<<< HEAD
-      debugProfileStats(
-        `model, ${modelName}, mode, ${vlMode || 'default'}, ui-tars-version, ${uiTarsVersion}, prompt-tokens, ${result.usage?.prompt_tokens || ''}, completion-tokens, ${result.usage?.completion_tokens || ''}, total-tokens, ${result.usage?.total_tokens || ''}, cost-ms, ${timeCost}, requestId, ${result._request_id || ''}, temperature, ${temperature ?? ''}`,
-      );
-=======
       let lastError: Error | undefined;
->>>>>>> 197021a22677c057594e540cebb0d692775c6286
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
