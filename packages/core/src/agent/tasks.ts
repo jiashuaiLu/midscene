@@ -1,4 +1,5 @@
 import {
+  AIResponseParseError,
   ConversationHistory,
   autoGLMPlanning,
   plan,
@@ -31,7 +32,7 @@ import type {
   ServiceExtractParam,
 } from '@/types';
 import { ServiceError } from '@/types';
-import type { IModelConfig } from '@midscene/shared/env';
+import { type IModelConfig, getCurrentTime } from '@midscene/shared/env';
 import { getDebug } from '@midscene/shared/logger';
 import { assert } from '@midscene/shared/utils';
 import { ExecutionSession } from './execution-session';
@@ -79,6 +80,10 @@ export class TaskExecutor {
 
   replanningCycleLimit?: number;
 
+  waitAfterAction?: number;
+
+  useDeviceTimestamp?: boolean;
+
   // @deprecated use .interface instead
   get page() {
     return this.interface;
@@ -91,6 +96,8 @@ export class TaskExecutor {
       taskCache?: TaskCache;
       onTaskStart?: ExecutionTaskProgressOptions['onTaskStart'];
       replanningCycleLimit?: number;
+      waitAfterAction?: number;
+      useDeviceTimestamp?: boolean;
       hooks?: TaskExecutorHooks;
       actionSpace: DeviceAction[];
     },
@@ -100,6 +107,8 @@ export class TaskExecutor {
     this.taskCache = opts.taskCache;
     this.onTaskStartCallback = opts?.onTaskStart;
     this.replanningCycleLimit = opts.replanningCycleLimit;
+    this.waitAfterAction = opts.waitAfterAction;
+    this.useDeviceTimestamp = opts.useDeviceTimestamp;
     this.hooks = opts.hooks;
     this.conversationHistory = new ConversationHistory();
     this.providedActionSpace = opts.actionSpace;
@@ -108,6 +117,7 @@ export class TaskExecutor {
       service,
       taskCache: opts.taskCache,
       actionSpace: this.getActionSpace(),
+      waitAfterAction: opts.waitAfterAction,
     });
   }
 
@@ -130,6 +140,20 @@ export class TaskExecutor {
     return this.providedActionSpace;
   }
 
+  /**
+   * Get a readable time string using device time when configured.
+   * This method respects the useDeviceTimestamp configuration.
+   * @param format - Optional format string
+   * @returns A formatted time string
+   */
+  private async getTimeString(format?: string): Promise<string> {
+    const timestamp = await getCurrentTime(
+      this.interface,
+      this.useDeviceTimestamp,
+    );
+    return getReadableTimeString(format, timestamp);
+  }
+
   public async convertPlanToExecutable(
     plans: PlanningAction[],
     modelConfigForPlanning: IModelConfig,
@@ -149,7 +173,7 @@ export class TaskExecutor {
 
   async loadYamlFlowAsPlanning(userInstruction: string, yamlString: string) {
     const session = this.createExecutionSession(
-      taskTitleStr('Action', userInstruction),
+      taskTitleStr('Act', userInstruction),
     );
 
     const task: ExecutionTaskPlanningApply = {
@@ -266,7 +290,7 @@ export class TaskExecutor {
     this.conversationHistory.reset();
 
     const session = this.createExecutionSession(
-      taskTitleStr('Action', userPrompt),
+      taskTitleStr('Act', userPrompt),
     );
     const runner = session.getRunner();
 
@@ -284,6 +308,14 @@ export class TaskExecutor {
 
     // Main planning loop - unified plan/replan logic
     while (true) {
+      // Get sub-goal status text if available
+      const subGoalStatus =
+        this.conversationHistory.subGoalsToText() || undefined;
+
+      // Get memories text if available
+      const memoriesStatus =
+        this.conversationHistory.memoriesToText() || undefined;
+
       const result = await session.appendAndRun(
         {
           type: 'Planning',
@@ -293,6 +325,8 @@ export class TaskExecutor {
             aiActContext,
             imagesIncludeCount,
             deepThink,
+            ...(subGoalStatus ? { subGoalStatus } : {}),
+            ...(memoriesStatus ? { memoriesStatus } : {}),
           },
           executor: async (param, executorContext) => {
             const { uiContext } = executorContext;
@@ -317,29 +351,47 @@ export class TaskExecutor {
                 ? autoGLMPlanning
                 : plan;
 
-            const planResult = await planImpl(param.userInstruction, {
-              context: uiContext,
-              actionContext: param.aiActContext,
-              interfaceType: this.interface.interfaceType as InterfaceType,
-              actionSpace,
-              modelConfig: modelConfigForPlanning,
-              conversationHistory: this.conversationHistory,
-              includeBbox: includeBboxInPlanning,
-              imagesIncludeCount,
-              deepThink,
-            });
+            let planResult: Awaited<ReturnType<typeof planImpl>>;
+            try {
+              planResult = await planImpl(param.userInstruction, {
+                context: uiContext,
+                actionContext: param.aiActContext,
+                interfaceType: this.interface.interfaceType as InterfaceType,
+                actionSpace,
+                modelConfig: modelConfigForPlanning,
+                conversationHistory: this.conversationHistory,
+                includeBbox: includeBboxInPlanning,
+                imagesIncludeCount,
+                deepThink,
+              });
+            } catch (planError) {
+              if (planError instanceof AIResponseParseError) {
+                // Record usage and rawResponse even when parsing fails
+                executorContext.task.usage = planError.usage;
+                executorContext.task.log = {
+                  ...(executorContext.task.log || {}),
+                  rawResponse: planError.rawResponse,
+                };
+              }
+              throw planError;
+            }
             debug('planResult', JSON.stringify(planResult, null, 2));
 
             const {
               actions,
               thought,
               log,
-              note,
+              memory,
               error,
               usage,
               rawResponse,
               reasoning_content,
+              finalizeSuccess,
+              finalizeMessage,
+              updateSubGoals,
+              markFinishedIndexes,
             } = planResult;
+            outputString = finalizeMessage;
 
             executorContext.task.log = {
               ...(executorContext.task.log || {}),
@@ -351,14 +403,24 @@ export class TaskExecutor {
               actions: actions || [],
               log,
               thought,
-              note,
+              memory,
               yamlFlow: planResult.yamlFlow,
-              output: outputString,
+              output: finalizeMessage,
               shouldContinuePlanning: planResult.shouldContinuePlanning,
+              updateSubGoals,
+              markFinishedIndexes,
             };
             executorContext.uiContext = uiContext;
 
             assert(!error, `Failed to continue: ${error}\n${log || ''}`);
+
+            // Check if task was finalized with failure
+            if (finalizeSuccess === false) {
+              assert(
+                false,
+                `Task failed: ${finalizeMessage || 'No error message provided'}\n${log || ''}`,
+              );
+            }
 
             return {
               cache: {
@@ -402,15 +464,18 @@ export class TaskExecutor {
           this.conversationHistory.pendingFeedbackMessage,
         );
       }
-      // todo: set time string
+
+      // Set initial time context for the first planning call
+      const initialTimeString = await this.getTimeString();
+      this.conversationHistory.pendingFeedbackMessage += `Current time: ${initialTimeString}`;
 
       try {
-        const result = await session.appendAndRun(executables.tasks);
-        outputString = result?.output;
+        await session.appendAndRun(executables.tasks);
       } catch (error: any) {
         // errorFlag = true;
         errorCountInOnePlanningLoop++;
-        this.conversationHistory.pendingFeedbackMessage = `Time: ${getReadableTimeString()}, Error executing running tasks: ${error?.message || String(error)}`;
+        const timeString = await this.getTimeString();
+        this.conversationHistory.pendingFeedbackMessage = `Time: ${timeString}, Error executing running tasks: ${error?.message || String(error)}`;
         debug(
           'error when executing running tasks, but continue to run if it is not too many errors:',
           error instanceof Error ? error.message : String(error),
@@ -437,7 +502,8 @@ export class TaskExecutor {
       }
 
       if (!this.conversationHistory.pendingFeedbackMessage) {
-        this.conversationHistory.pendingFeedbackMessage = `Time: ${getReadableTimeString()}, I have finished the action previously planned.`;
+        const timeString = await this.getTimeString();
+        this.conversationHistory.pendingFeedbackMessage = `Time: ${timeString}, I have finished the action previously planned.`;
       }
     }
 
@@ -475,7 +541,12 @@ export class TaskExecutor {
           queryDump = dump;
           task.log = {
             dump,
+            rawResponse: dump.taskInfo?.rawResponse,
           };
+          task.usage = dump.taskInfo?.usage;
+          if (dump.taskInfo?.reasoning_content) {
+            task.reasoning_content = dump.taskInfo.reasoning_content;
+          }
         };
 
         // Get context for query operations
@@ -521,6 +592,7 @@ export class TaskExecutor {
             opt,
             extraPageDescription,
             multimodalPrompt,
+            uiContext,
           );
         } catch (error) {
           if (error instanceof ServiceError) {
@@ -529,9 +601,8 @@ export class TaskExecutor {
           throw error;
         }
 
-        const { data, usage, thought, dump, reasoning_content } = extractResult;
+        const { data, thought, dump } = extractResult;
         applyDump(dump);
-        task.reasoning_content = reasoning_content;
 
         let outputResult = data;
         if (ifTypeRestricted) {
@@ -556,7 +627,6 @@ export class TaskExecutor {
         }
 
         if (type === 'Assert' && !outputResult) {
-          task.usage = usage;
           task.thought = thought;
           throw new Error(`Assertion failed: ${thought}`);
         }
@@ -564,7 +634,6 @@ export class TaskExecutor {
         return {
           output: outputResult,
           log: queryDump,
-          usage,
           thought,
         };
       },
@@ -610,12 +679,6 @@ export class TaskExecutor {
       thought,
       runner,
     };
-  }
-
-  async taskForSleep(timeMs: number, _modelConfig: IModelConfig) {
-    return this.taskBuilder.createSleepTask({
-      timeMs,
-    });
   }
 
   async waitFor(
@@ -687,11 +750,17 @@ export class TaskExecutor {
         `unknown error when waiting for assertion: ${textPrompt}`;
       const now = Date.now();
       if (now - currentCheckStart < checkIntervalMs) {
-        const timeRemaining = checkIntervalMs - (now - currentCheckStart);
-        const sleepTask = this.taskBuilder.createSleepTask({
-          timeMs: timeRemaining,
-        });
-        await session.append(sleepTask);
+        const elapsed = now - currentCheckStart;
+        const timeRemaining = checkIntervalMs - elapsed;
+        const thought = `Check interval is ${checkIntervalMs}ms, ${elapsed}ms elapsed since last check, sleeping for ${timeRemaining}ms`;
+        const { tasks: sleepTasks } = await this.convertPlanToExecutable(
+          [{ type: 'Sleep', param: { timeMs: timeRemaining }, thought }],
+          modelConfig,
+          modelConfig,
+        );
+        if (sleepTasks[0]) {
+          await session.appendAndRun(sleepTasks[0]);
+        }
       }
     }
 

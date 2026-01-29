@@ -4,12 +4,14 @@ import type {
   AISectionLocatorResponse,
   AIUsageInfo,
   Rect,
-  ReferenceImage,
   ServiceExtractOption,
   UIContext,
 } from '@/types';
 import type { IModelConfig } from '@midscene/shared/env';
-import { generateElementByPosition } from '@midscene/shared/extractor/dom-util';
+import {
+  generateElementByPoint,
+  generateElementByRect,
+} from '@midscene/shared/extractor/dom-util';
 import {
   cropByRect,
   paddingToMatchBlockByBase64,
@@ -29,6 +31,7 @@ import { getAutoGLMLocatePrompt } from './auto-glm/prompt';
 import { isAutoGLM } from './auto-glm/util';
 import {
   extractDataQueryPrompt,
+  parseXMLExtractionResponse,
   systemPromptToExtract,
 } from './prompt/extraction';
 import {
@@ -44,6 +47,8 @@ import {
   systemPromptToJudgeOrderSensitive,
 } from './prompt/order-sensitive-judge';
 import {
+  AIResponseParseError,
+  callAI,
   callAIWithObjectResponse,
   callAIWithStringResponse,
 } from './service-caller/index';
@@ -234,38 +239,21 @@ export async function AiLocateElement(options: {
 
       debugInspect('auto-glm pixel coordinates:', { pixelX, pixelY });
 
-      // Create a small bbox around the point
-      const bboxSize = 10;
-      const x1 = Math.max(pixelX - bboxSize / 2, 0);
-      const y1 = Math.max(pixelY - bboxSize / 2, 0);
-      const x2 = Math.min(pixelX + bboxSize / 2, imageWidth);
-      const y2 = Math.min(pixelY + bboxSize / 2, imageHeight);
-
-      // Convert to Rect format
-      resRect = {
-        left: x1,
-        top: y1,
-        width: x2 - x1,
-        height: y2 - y1,
-      };
-
       // Apply offset if searching in a cropped area
+      let finalX = pixelX;
+      let finalY = pixelY;
       if (options.searchConfig?.rect) {
-        resRect.left += options.searchConfig.rect.left;
-        resRect.top += options.searchConfig.rect.top;
+        finalX += options.searchConfig.rect.left;
+        finalY += options.searchConfig.rect.top;
       }
 
-      debugInspect('auto-glm resRect:', resRect);
-
-      const rectCenter = {
-        x: resRect.left + resRect.width / 2,
-        y: resRect.top + resRect.height / 2,
-      };
-
-      const element: LocateResultElement = generateElementByPosition(
-        rectCenter,
+      const element: LocateResultElement = generateElementByPoint(
+        [finalX, finalY],
         targetElementDescriptionText as string,
       );
+
+      resRect = element.rect;
+      debugInspect('auto-glm resRect:', resRect);
 
       if (element) {
         matchedElements = [element];
@@ -284,7 +272,30 @@ export async function AiLocateElement(options: {
     };
   }
 
-  const res = await callAIFn(msgs, modelConfig);
+  let res: Awaited<ReturnType<typeof callAIFn>>;
+  try {
+    res = await callAIFn(msgs, modelConfig);
+  } catch (callError) {
+    // Return error with usage and rawResponse if available
+    const errorMessage =
+      callError instanceof Error ? callError.message : String(callError);
+    const rawResponse =
+      callError instanceof AIResponseParseError
+        ? callError.rawResponse
+        : errorMessage;
+    const usage =
+      callError instanceof AIResponseParseError ? callError.usage : undefined;
+    return {
+      rect: undefined,
+      parseResult: {
+        elements: [],
+        errors: [`AI call error: ${errorMessage}`],
+      },
+      rawResponse,
+      usage,
+      reasoning_content: undefined,
+    };
+  }
 
   const rawResponse = JSON.stringify(res.content);
 
@@ -311,13 +322,8 @@ export async function AiLocateElement(options: {
 
       debugInspect('resRect', resRect);
 
-      const rectCenter = {
-        x: resRect.left + resRect.width / 2,
-        y: resRect.top + resRect.height / 2,
-      };
-
-      const element: LocateResultElement = generateElementByPosition(
-        rectCenter,
+      const element: LocateResultElement = generateElementByRect(
+        resRect,
         targetElementDescriptionText as string,
       );
       errors = [];
@@ -397,10 +403,32 @@ export async function AiLocateSection(options: {
     msgs.push(...addOns);
   }
 
-  const result = await callAIWithObjectResponse<AISectionLocatorResponse>(
-    msgs,
-    modelConfig,
-  );
+  let result: Awaited<
+    ReturnType<typeof callAIWithObjectResponse<AISectionLocatorResponse>>
+  >;
+  try {
+    result = await callAIWithObjectResponse<AISectionLocatorResponse>(
+      msgs,
+      modelConfig,
+    );
+  } catch (callError) {
+    // Return error with usage and rawResponse if available
+    const errorMessage =
+      callError instanceof Error ? callError.message : String(callError);
+    const rawResponse =
+      callError instanceof AIResponseParseError
+        ? callError.rawResponse
+        : errorMessage;
+    const usage =
+      callError instanceof AIResponseParseError ? callError.usage : undefined;
+    return {
+      rect: undefined,
+      imageBase64: undefined,
+      error: `AI call error: ${errorMessage}`,
+      rawResponse,
+      usage,
+    };
+  }
 
   let sectionRect: Rect | undefined;
   const sectionBbox = result.content.bbox;
@@ -517,14 +545,32 @@ export async function AiExtractElementInfo<T>(options: {
     msgs.push(...addOns);
   }
 
-  const result = await callAIWithObjectResponse<AIDataExtractionResponse<T>>(
-    msgs,
-    modelConfig,
-  );
+  const {
+    content: rawResponse,
+    usage,
+    reasoning_content,
+  } = await callAI(msgs, modelConfig);
+
+  // Parse XML response to JSON object
+  let parseResult: AIDataExtractionResponse<T>;
+  try {
+    parseResult = parseXMLExtractionResponse<T>(rawResponse);
+  } catch (parseError) {
+    // Throw AIResponseParseError with usage and rawResponse preserved
+    const errorMessage =
+      parseError instanceof Error ? parseError.message : String(parseError);
+    throw new AIResponseParseError(
+      `XML parse error: ${errorMessage}`,
+      rawResponse,
+      usage,
+    );
+  }
+
   return {
-    parseResult: result.content,
-    usage: result.usage,
-    reasoning_content: result.reasoning_content,
+    parseResult,
+    rawResponse,
+    usage,
+    reasoning_content,
   };
 }
 

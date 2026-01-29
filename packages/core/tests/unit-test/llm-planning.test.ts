@@ -1,4 +1,9 @@
+import { parseXMLPlanningResponse } from '@/ai-model/llm-planning';
 import { descriptionForAction } from '@/ai-model/prompt/llm-planning';
+import {
+  parseMarkFinishedIndexes,
+  parseSubGoalsFromXML,
+} from '@/ai-model/prompt/util';
 import {
   adaptQwen2_5Bbox as adaptQwenBbox,
   fillBboxParam,
@@ -607,5 +612,513 @@ describe('llm planning - descriptionForAction with ZodEffects and ZodUnion', () 
         - param:
           - nested: string | object"
     `);
+  });
+});
+
+describe('parseXMLPlanningResponse', () => {
+  it('should parse complete XML response with all fields', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>I need to click the login button</thought>
+<memory>User credentials are already filled</memory>
+<log>Click the login button</log>
+<error></error>
+<action-type>Tap</action-type>
+<action-param-json>
+{
+  "locate": {
+    "prompt": "The login button",
+    "bbox": [100, 200, 300, 400]
+  }
+}
+</action-param-json>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'I need to click the login button',
+      memory: 'User credentials are already filled',
+      log: 'Click the login button',
+      action: {
+        type: 'Tap',
+        param: {
+          locate: {
+            prompt: 'The login button',
+            bbox: [100, 200, 300, 400],
+          },
+        },
+      },
+    });
+  });
+
+  it('should parse XML response with only required fields', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Performing action</log>
+<action-type>Tap</action-type>
+<action-param-json>
+{
+  "locate": {
+    "prompt": "Button"
+  }
+}
+</action-param-json>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      log: 'Performing action',
+      action: {
+        type: 'Tap',
+        param: {
+          locate: {
+            prompt: 'Button',
+          },
+        },
+      },
+    });
+  });
+
+  it('should parse XML response with null action', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Task completed</log>
+<action-type>null</action-type>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      log: 'Task completed',
+      action: null,
+    });
+  });
+
+  it('should parse XML response without action-type', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Just logging</log>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      log: 'Just logging',
+      action: null,
+    });
+  });
+
+  it('should parse XML response with error field', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Attempting to recover</log>
+<error>Previous action failed</error>
+<action-type>Scroll</action-type>
+<action-param-json>
+{
+  "direction": "down"
+}
+</action-param-json>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      log: 'Attempting to recover',
+      error: 'Previous action failed',
+      action: {
+        type: 'Scroll',
+        param: {
+          direction: 'down',
+        },
+      },
+    });
+  });
+
+  it('should parse action without param', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Waiting</log>
+<action-type>Wait</action-type>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      log: 'Waiting',
+      action: {
+        type: 'Wait',
+      },
+    });
+  });
+
+  it('should handle multiline content in tags', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>
+  This is a complex thought
+  spanning multiple lines
+</thought>
+<log>Executing complex action</log>
+<action-type>Input</action-type>
+<action-param-json>
+{
+  "value": "test value",
+  "locate": {
+    "prompt": "input field"
+  }
+}
+</action-param-json>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.thought).toBe(
+      'This is a complex thought\n  spanning multiple lines',
+    );
+    expect(result.log).toBe('Executing complex action');
+    expect(result.action?.type).toBe('Input');
+  });
+
+  it('should not throw error when log field is missing and no action', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Some thought</thought>
+<complete-goal success="true">Task completed</complete-goal>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+    expect(result).toEqual({
+      thought: 'Some thought',
+      log: '',
+      action: null,
+      finalizeMessage: 'Task completed',
+      finalizeSuccess: true,
+    });
+  });
+
+  it('should throw error when action-param-json is invalid JSON', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Action</log>
+<action-type>Tap</action-type>
+<action-param-json>
+{invalid json}
+</action-param-json>
+    `.trim();
+
+    expect(() => parseXMLPlanningResponse(xml, modelFamily)).toThrow(
+      'Failed to parse action-param-json',
+    );
+  });
+
+  it('should handle case-insensitive tag matching', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<LOG>Case insensitive log</LOG>
+<ACTION-TYPE>Tap</ACTION-TYPE>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.log).toBe('Case insensitive log');
+    expect(result.action?.type).toBe('Tap');
+  });
+
+  it('should parse XML with special characters in content', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<log>Click "Submit" button</log>
+<memory>Values: <100 & >50</memory>
+<action-type>Tap</action-type>
+<action-param-json>
+{
+  "locate": {
+    "prompt": "Button with & symbol"
+  }
+}
+</action-param-json>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.log).toBe('Click "Submit" button');
+    expect(result.memory).toBe('Values: <100 & >50');
+    expect(result.action?.param.locate.prompt).toBe('Button with & symbol');
+  });
+
+  it('should parse complete-goal tag with success=true and message', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Task completed successfully</thought>
+<complete-goal success="true">The product names are: 'Product A', 'Product B', 'Product C'</complete-goal>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'Task completed successfully',
+      log: '',
+      action: null,
+      finalizeMessage:
+        "The product names are: 'Product A', 'Product B', 'Product C'",
+      finalizeSuccess: true,
+    });
+  });
+
+  it('should parse complete-goal tag with success=false and error message', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Task failed</thought>
+<complete-goal success="false">Unable to find the required element on the page</complete-goal>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'Task failed',
+      log: '',
+      action: null,
+      finalizeMessage: 'Unable to find the required element on the page',
+      finalizeSuccess: false,
+    });
+  });
+
+  it('should parse complete-goal tag with empty message', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Task completed</thought>
+<complete-goal success="true"></complete-goal>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'Task completed',
+      log: '',
+      action: null,
+      finalizeSuccess: true,
+    });
+  });
+
+  it('should parse complete-goal tag with multiline message', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Data extraction completed</thought>
+<complete-goal success="true">
+Extracted data:
+- Item 1: Value A
+- Item 2: Value B
+- Item 3: Value C
+</complete-goal>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'Data extraction completed',
+      log: '',
+      action: null,
+      finalizeMessage:
+        'Extracted data:\n- Item 1: Value A\n- Item 2: Value B\n- Item 3: Value C',
+      finalizeSuccess: true,
+    });
+  });
+
+  it('should parse complete-goal tag along with other optional fields', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>All tasks completed successfully</thought>
+<memory>Total items processed: 10</memory>
+<complete-goal success="true">All 10 items have been processed</complete-goal>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'All tasks completed successfully',
+      log: '',
+      memory: 'Total items processed: 10',
+      action: null,
+      finalizeMessage: 'All 10 items have been processed',
+      finalizeSuccess: true,
+    });
+  });
+
+  it('should handle complete-goal tag case insensitively', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Task done</thought>
+<COMPLETE-GOAL success="true">Success message</COMPLETE-GOAL>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result).toEqual({
+      thought: 'Task done',
+      log: '',
+      action: null,
+      finalizeMessage: 'Success message',
+      finalizeSuccess: true,
+    });
+  });
+
+  it('should parse update-plan-content with sub-goals', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Breaking down the task</thought>
+<log>Planning the steps</log>
+<update-plan-content>
+  <sub-goal index="1" status="pending">Log in to the system</sub-goal>
+  <sub-goal index="2" status="pending">Complete all to-do items</sub-goal>
+  <sub-goal index="3" status="pending">Submit the registration form</sub-goal>
+</update-plan-content>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.updateSubGoals).toEqual([
+      { index: 1, status: 'pending', description: 'Log in to the system' },
+      { index: 2, status: 'pending', description: 'Complete all to-do items' },
+      {
+        index: 3,
+        status: 'pending',
+        description: 'Submit the registration form',
+      },
+    ]);
+  });
+
+  it('should parse mark-sub-goal-done with finished indexes', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>First step completed</thought>
+<log>Moving to next step</log>
+<mark-sub-goal-done>
+  <sub-goal index="1" status="finished" />
+</mark-sub-goal-done>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.markFinishedIndexes).toEqual([1]);
+  });
+
+  it('should parse multiple finished indexes in mark-sub-goal-done', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Multiple steps completed</thought>
+<log>Great progress</log>
+<mark-sub-goal-done>
+  <sub-goal index="1" status="finished" />
+  <sub-goal index="2" status="finished" />
+</mark-sub-goal-done>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.markFinishedIndexes).toEqual([1, 2]);
+  });
+
+  it('should parse both update-plan-content and mark-sub-goal-done', () => {
+    const modelFamily = 'doubao-vision';
+    const xml = `
+<thought>Updating plan after progress</thought>
+<log>Continuing work</log>
+<update-plan-content>
+  <sub-goal index="1" status="finished">Log in to the system</sub-goal>
+  <sub-goal index="2" status="pending">Complete all to-do items</sub-goal>
+</update-plan-content>
+<mark-sub-goal-done>
+  <sub-goal index="1" status="finished" />
+</mark-sub-goal-done>
+    `.trim();
+
+    const result = parseXMLPlanningResponse(xml, modelFamily);
+
+    expect(result.updateSubGoals).toEqual([
+      { index: 1, status: 'finished', description: 'Log in to the system' },
+      { index: 2, status: 'pending', description: 'Complete all to-do items' },
+    ]);
+    expect(result.markFinishedIndexes).toEqual([1]);
+  });
+});
+
+describe('parseSubGoalsFromXML', () => {
+  it('should parse sub-goals with content', () => {
+    const xml = `
+  <sub-goal index="1" status="pending">First task</sub-goal>
+  <sub-goal index="2" status="finished">Second task</sub-goal>
+    `;
+
+    const result = parseSubGoalsFromXML(xml);
+
+    expect(result).toEqual([
+      { index: 1, status: 'pending', description: 'First task' },
+      { index: 2, status: 'finished', description: 'Second task' },
+    ]);
+  });
+
+  it('should parse self-closing sub-goals', () => {
+    const xml = `
+  <sub-goal index="1" status="finished" />
+  <sub-goal index="2" status="finished" />
+    `;
+
+    const result = parseSubGoalsFromXML(xml);
+
+    expect(result).toEqual([
+      { index: 1, status: 'finished', description: '' },
+      { index: 2, status: 'finished', description: '' },
+    ]);
+  });
+
+  it('should return empty array for empty content', () => {
+    const result = parseSubGoalsFromXML('');
+    expect(result).toEqual([]);
+  });
+
+  it('should handle mixed formats', () => {
+    const xml = `
+  <sub-goal index="1" status="finished" />
+  <sub-goal index="2" status="pending">Task description</sub-goal>
+    `;
+
+    const result = parseSubGoalsFromXML(xml);
+
+    expect(result).toEqual([
+      { index: 1, status: 'finished', description: '' },
+      { index: 2, status: 'pending', description: 'Task description' },
+    ]);
+  });
+});
+
+describe('parseMarkFinishedIndexes', () => {
+  it('should parse finished indexes', () => {
+    const xml = `
+  <sub-goal index="1" status="finished" />
+  <sub-goal index="3" status="finished" />
+    `;
+
+    const result = parseMarkFinishedIndexes(xml);
+
+    expect(result).toEqual([1, 3]);
+  });
+
+  it('should return empty array for no matches', () => {
+    const result = parseMarkFinishedIndexes('');
+    expect(result).toEqual([]);
+  });
+
+  it('should ignore non-finished status', () => {
+    const xml = `
+  <sub-goal index="1" status="pending" />
+  <sub-goal index="2" status="finished" />
+    `;
+
+    const result = parseMarkFinishedIndexes(xml);
+
+    expect(result).toEqual([2]);
   });
 });
