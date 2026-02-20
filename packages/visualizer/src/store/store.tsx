@@ -115,7 +115,8 @@ const getConfigStringFromLocalStorage = () => {
     return configString;
   }
   // Default environment configuration
-  return `OPENAI_BASE_URL=http://ai-api.jdcloud.com/v1
+  return `
+OPENAI_BASE_URL=http://ai-api.jdcloud.com/v1
 MIDSCENE_MODEL_NAME=doubao-seed-1-6-vision-250815
 OPENAI_API_KEY=pk-be61780a-eb09-4d0f-afde-b0a5c5dfed10
 MIDSCENE_MODEL_FAMILY=doubao-vision`;
