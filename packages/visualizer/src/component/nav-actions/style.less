@@ -16,6 +16,36 @@
     }
   }
 
+  .nav-icon-img {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    transition: opacity 0.3s;
+
+    &:hover {
+      opacity: 0.8;
+    }
+  }
+
+  .nav-icon-text {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff;
+    background: #1890ff;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.3s;
+
+    &:hover {
+      background: #40a9ff;
+    }
+  }
+
   a {
     display: flex;
     align-items: center;
@@ -24,6 +54,9 @@
     &:hover {
       .nav-icon {
         color: @primary-color;
+      }
+      .nav-icon-img {
+        opacity: 0.8;
       }
     }
   }

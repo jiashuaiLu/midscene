@@ -1,4 +1,4 @@
-import Service from '@midscene/core';
+import Service, { ScreenshotItem } from '@midscene/core';
 import type { Rect, UIContext } from '@midscene/core';
 import type { RecordedEvent } from '@midscene/recorder';
 import { globalModelConfigManager } from '@midscene/shared/env';
@@ -16,6 +16,37 @@ const pendingCallbacks = new Map<string, (description: string) => void>();
 
 // Debounce mechanism for AI description generation
 const debounceTimeouts = new Map<string, NodeJS.Timeout>();
+
+// Concurrency control for AI description generation
+const MAX_CONCURRENT_AI_REQUESTS = 3;
+let currentAIRequests = 0;
+const aiRequestQueue: Array<() => void> = [];
+
+// Helper function to acquire AI request slot
+const acquireAISlot = (): Promise<void> => {
+  return new Promise((resolve) => {
+    if (currentAIRequests < MAX_CONCURRENT_AI_REQUESTS) {
+      currentAIRequests++;
+      resolve();
+    } else {
+      aiRequestQueue.push(() => {
+        currentAIRequests++;
+        resolve();
+      });
+    }
+  });
+};
+
+// Helper function to release AI request slot
+const releaseAISlot = () => {
+  currentAIRequests--;
+  if (aiRequestQueue.length > 0) {
+    const next = aiRequestQueue.shift();
+    if (next) {
+      next();
+    }
+  }
+};
 
 // Add an item to cache with size limiting
 const addToCache = (
@@ -102,11 +133,24 @@ export const generateAIDescription = async (
   event: RecordedEvent,
   hashId: string,
 ): Promise<string> => {
+  console.log('[generateAIDescription] Starting for event:', {
+    type: event.type,
+    hashId,
+    hasScreenshot: !!event.screenshotBefore,
+    hasValidRect: hasValidRect(event),
+    elementRect: event.elementRect,
+  });
+
   if (!event.screenshotBefore || !hasValidRect(event)) {
+    console.warn('[generateAIDescription] Missing screenshot or valid rect, using fallback', {
+      hasScreenshot: !!event.screenshotBefore,
+      hasValidRect: hasValidRect(event),
+    });
     return generateFallbackDescription();
   }
 
   if (ongoingDescriptionRequests.has(hashId)) {
+    console.log('[generateAIDescription] Returning existing promise for hashId:', hashId);
     return ongoingDescriptionRequests.get(hashId)!;
   }
 
@@ -119,12 +163,19 @@ export const generateAIDescription = async (
     let lastError;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        console.log(`[generateAIDescription] Attempt ${attempt}/${maxRetries} to call AI describe`);
         const modelConfig = globalModelConfigManager.getModelConfig('default');
-        return await service.describe(rect, modelConfig);
+        console.log('[generateAIDescription] Model config:', {
+          modelFamily: modelConfig.modelFamily,
+        });
+        const result = await service.describe(rect, modelConfig);
+        console.log('[generateAIDescription] AI describe succeeded:', result);
+        return result;
       } catch (err) {
         lastError = err;
+        console.error(`[generateAIDescription] Attempt ${attempt} failed:`, err);
         if (attempt < maxRetries) {
-          // Optional: Wait for a while and then try again
+          console.log('[generateAIDescription] Retrying in 200ms...');
           await new Promise((res) => setTimeout(res, 200));
         }
       }
@@ -134,10 +185,20 @@ export const generateAIDescription = async (
 
   const descriptionPromise = (async () => {
     try {
+      // Acquire AI request slot
+      await acquireAISlot();
+      
+      // Create a proper UIContext using ScreenshotItem
+      const screenshot = ScreenshotItem.create(event.screenshotBefore as string);
       const mockContext: UIContext = {
-        screenshotBase64: event.screenshotBefore as string,
+        screenshot,
         size: { width: event.pageInfo.width, height: event.pageInfo.height },
-      };
+      } as UIContext;
+
+      console.log('[generateAIDescription] Creating Service with context:', {
+        screenshotLength: event.screenshotBefore?.length,
+        pageSize: mockContext.size,
+      });
 
       const service = new Service(mockContext);
       const rect = extractRect(event);
@@ -145,16 +206,21 @@ export const generateAIDescription = async (
         throw new Error('No valid rect found');
       }
 
+      console.log('[generateAIDescription] Extracted rect:', rect);
+
       // Modify it to a call with retry
       const { description } = await describeWithRetry(service, rect, 3);
+      console.log('[generateAIDescription] Final description:', description);
       addToCache(descriptionCache, hashId, description);
       return description;
     } catch (error) {
-      console.error('Failed to generate AI description:', error);
+      console.error('[generateAIDescription] Failed to generate AI description:', error);
       const fallbackDescription = generateFallbackDescription();
       addToCache(descriptionCache, hashId, fallbackDescription);
       return fallbackDescription;
     } finally {
+      // Release AI request slot
+      releaseAISlot();
       ongoingDescriptionRequests.delete(hashId);
       pendingCallbacks.delete(hashId);
     }

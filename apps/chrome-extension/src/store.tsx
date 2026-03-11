@@ -5,6 +5,16 @@ import { recordLogger } from './extension/recorder/logger';
 import { dbManager, initializeDB } from './utils/indexedDB';
 
 const { create } = Z;
+
+// Debounce helper for batch updates
+let updateSessionTimeout: NodeJS.Timeout | null = null;
+const UPDATE_DEBOUNCE_MS = 1000; // 1 second debounce
+
+// Event batch queue for optimization
+let eventBatchQueue: ChromeRecordedEvent[] = [];
+let batchUpdateTimeout: NodeJS.Timeout | null = null;
+const BATCH_UPDATE_MS = 500; // 500ms batch window
+
 export const useBlackboardPreference = create<{
   markerVisible: boolean;
   elementsVisible: boolean;
@@ -35,6 +45,7 @@ export interface RecordingSession {
   generatedCode?: {
     playwright?: string;
     yaml?: string;
+    textCase?: string; // JSON string of TextCase
     lastGenerated?: number; // timestamp of last generation
   };
 }
@@ -291,29 +302,67 @@ export const useRecordStore = create<{
     const state = get();
     const newEvents = [...state.events, event];
     set({ events: newEvents });
+    
     if (state.isRecording) {
-      const sessionId = useRecordingSessionStore.getState().currentSessionId;
-      if (sessionId) {
-        await dbManager.updateSession(sessionId, {
-          events: newEvents,
-          updatedAt: Date.now(),
-        });
+      // Add to batch queue instead of immediate update
+      eventBatchQueue.push(event);
+      
+      // Clear existing timeout if any
+      if (batchUpdateTimeout) {
+        clearTimeout(batchUpdateTimeout);
       }
-      await saveEventsToStorage(newEvents);
+      
+      // Batch update after delay
+      batchUpdateTimeout = setTimeout(async () => {
+        if (eventBatchQueue.length === 0) return;
+        
+        const eventsToSave = [...eventBatchQueue];
+        eventBatchQueue = [];
+        
+        const sessionId = useRecordingSessionStore.getState().currentSessionId;
+        if (sessionId) {
+          try {
+            await dbManager.updateSession(sessionId, {
+              events: newEvents,
+              updatedAt: Date.now(),
+            });
+          } catch (error) {
+            console.error('Failed to batch update session:', error);
+          }
+        }
+        
+        try {
+          await saveEventsToStorage(newEvents);
+        } catch (error) {
+          console.error('Failed to save events to storage:', error);
+        }
+      }, BATCH_UPDATE_MS);
     }
   },
   updateEvent: async (event: ChromeRecordedEvent) => {
     const state = get();
     const newEvents = mergeEvents(state.events, [event]);
     set({ events: newEvents });
+    
     if (state.isRecording) {
-      const sessionId = useRecordingSessionStore.getState().currentSessionId;
-      if (sessionId) {
-        await dbManager.updateSession(sessionId, {
-          events: newEvents,
-          updatedAt: Date.now(),
-        });
+      // Debounce session update
+      if (updateSessionTimeout) {
+        clearTimeout(updateSessionTimeout);
       }
+      
+      updateSessionTimeout = setTimeout(async () => {
+        const sessionId = useRecordingSessionStore.getState().currentSessionId;
+        if (sessionId) {
+          try {
+            await dbManager.updateSession(sessionId, {
+              events: newEvents,
+              updatedAt: Date.now(),
+            });
+          } catch (error) {
+            console.error('Failed to update session:', error);
+          }
+        }
+      }, UPDATE_DEBOUNCE_MS);
     }
   },
   setEvents: async (events: ChromeRecordedEvent[]) => {
@@ -325,14 +374,26 @@ export const useRecordStore = create<{
       newEvents,
       eventsCount: newEvents.length,
     });
+    
     if (state.isRecording) {
-      const sessionId = useRecordingSessionStore.getState().currentSessionId;
-      if (sessionId) {
-        await dbManager.updateSession(sessionId, {
-          events: newEvents,
-          updatedAt: Date.now(),
-        });
+      // Debounce session update
+      if (updateSessionTimeout) {
+        clearTimeout(updateSessionTimeout);
       }
+      
+      updateSessionTimeout = setTimeout(async () => {
+        const sessionId = useRecordingSessionStore.getState().currentSessionId;
+        if (sessionId) {
+          try {
+            await dbManager.updateSession(sessionId, {
+              events: newEvents,
+              updatedAt: Date.now(),
+            });
+          } catch (error) {
+            console.error('Failed to update session:', error);
+          }
+        }
+      }, UPDATE_DEBOUNCE_MS);
     }
   },
   clearEvents: async () => {

@@ -9,17 +9,14 @@ import archiver from 'archiver';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Read package.json
-const packageJsonPath = path.resolve(
-  __dirname,
-  '../../../packages/core/package.json',
-);
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+// Read manifest.json
+const manifestPath = path.resolve(__dirname, '../static/manifest.json');
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
 // Validate version string to prevent injection
-const version = packageJson.version;
+const version = manifest.version;
 // if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?$/.test(version)) {
-//   console.error('Invalid version format in package.json');
+//   console.error('Invalid version format in manifest.json');
 //   process.exit(1);
 // }
 

@@ -5,7 +5,7 @@ import { assert } from '@midscene/shared/utils';
 import { PuppeteerAgent } from '@/puppeteer/index';
 import type { AgentOpt, Cache, MidsceneYamlScriptWebEnv } from '@midscene/core';
 import { DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT } from '@midscene/shared/constants';
-import puppeteer, { type Browser } from 'puppeteer';
+import puppeteer, { type Browser, type Page } from 'puppeteer';
 
 export const defaultUA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
@@ -170,6 +170,7 @@ export async function launchPuppeteerPage(
     keepWindow?: boolean;
   },
   browser?: Browser,
+  existingPage?: Page,
 ) {
   assert(target.url, 'url is required');
   const freeFn: FreeFn[] = [];
@@ -177,7 +178,7 @@ export async function launchPuppeteerPage(
   // prepare the environment
   const ua = target.userAgent || defaultUA;
   let width = defaultViewportWidth;
-  if (target.viewportWidth) {
+  if (target.viewportWidth !== undefined && target.viewportWidth !== null) {
     assert(
       typeof target.viewportWidth === 'number',
       'viewportWidth must be a number',
@@ -186,7 +187,7 @@ export async function launchPuppeteerPage(
     assert(width > 0, `viewportWidth must be greater than 0, but got ${width}`);
   }
   let height = defaultViewportHeight;
-  if (target.viewportHeight) {
+  if (target.viewportHeight !== undefined && target.viewportHeight !== null) {
     assert(
       typeof target.viewportHeight === 'number',
       'viewportHeight must be a number',
@@ -198,13 +199,16 @@ export async function launchPuppeteerPage(
     );
   }
   let dpr = defaultViewportScale;
-  if (target.viewportScale) {
+  if (
+    target.deviceScaleFactor !== undefined &&
+    target.deviceScaleFactor !== null
+  ) {
     assert(
-      typeof target.viewportScale === 'number',
-      'viewportScale must be a number',
+      typeof target.deviceScaleFactor === 'number',
+      'deviceScaleFactor must be a number',
     );
-    dpr = Number.parseInt(target.viewportScale as unknown as string, 10);
-    assert(dpr > 0, `viewportScale must be greater than 0, but got ${dpr}`);
+    dpr = Number.parseInt(target.deviceScaleFactor as unknown as string, 10);
+    assert(dpr >= 0, `deviceScaleFactor must be >= 0, but got ${dpr}`);
   }
   const viewportConfig = {
     width,
@@ -223,12 +227,14 @@ export async function launchPuppeteerPage(
   }
 
   // Build Chrome arguments using the shared helper
+  // Only pass windowSize in headed mode; in headless mode, defaultViewport takes precedence
+  // Add 100px to height to account for browser UI (address bar, tabs, etc.)
+  const browserUIHeight = 100;
   const args = buildChromeArgs({
     userAgent: ua,
-    windowSize: {
-      width,
-      height: height + (headed ? 100 : 0), // add 100px for the address bar in headed mode
-    },
+    windowSize: headed
+      ? { width, height: height + browserUIHeight }
+      : undefined,
     chromeArgs: target.chromeArgs,
   });
 
@@ -242,30 +248,46 @@ export async function launchPuppeteerPage(
     'preference',
     preference,
   );
+  // If an existing page is provided, reuse it instead of creating a new one
+  // This allows sharing localStorage and sessionStorage between YAML files
+  let page: Page;
   let browserInstance = browser;
-  if (!browserInstance) {
-    browserInstance = await puppeteer.launch({
-      headless: !preference?.headed,
-      defaultViewport: defaultViewportConfig,
-      args,
-      acceptInsecureCerts: target.acceptInsecureCerts,
-    });
-    freeFn.push({
-      name: 'puppeteer_browser',
-      fn: () => {
-        if (!preference?.keepWindow) {
-          if (process.platform === 'win32') {
-            setTimeout(() => {
+
+  if (existingPage) {
+    // Reuse the existing page - this preserves localStorage and sessionStorage
+    page = existingPage;
+    launcherDebug('reusing existing page for shared browser context');
+
+    // Get the browser instance from the existing page
+    if (!browserInstance) {
+      browserInstance = page.browser();
+    }
+  } else {
+    // Create a new browser and page
+    if (!browserInstance) {
+      browserInstance = await puppeteer.launch({
+        headless: !preference?.headed,
+        defaultViewport: defaultViewportConfig,
+        args,
+        acceptInsecureCerts: target.acceptInsecureCerts,
+      });
+      freeFn.push({
+        name: 'puppeteer_browser',
+        fn: () => {
+          if (!preference?.keepWindow) {
+            if (process.platform === 'win32') {
+              setTimeout(() => {
+                browserInstance?.close();
+              }, 800);
+            } else {
               browserInstance?.close();
-            }, 800);
-          } else {
-            browserInstance?.close();
+            }
           }
-        }
-      },
-    });
+        },
+      });
+    }
+    page = await browserInstance.newPage();
   }
-  const page = await browserInstance.newPage();
 
   if (target.cookie) {
     const cookieFileContent = readFileSync(target.cookie, 'utf-8');
@@ -332,11 +354,13 @@ export async function puppeteerAgentForTarget(
     >
   >,
   browser?: Browser,
+  existingPage?: Page,
 ) {
   const { page, freeFn } = await launchPuppeteerPage(
     target,
     preference,
     browser,
+    existingPage,
   );
   const aiActContext = resolveAiActionContext(target, preference);
 

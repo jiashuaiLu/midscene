@@ -16,6 +16,7 @@ import {
   cropByRect,
   paddingToMatchBlockByBase64,
   preProcessImageUrl,
+  scaleImage,
 } from '@midscene/shared/img';
 import { getDebug } from '@midscene/shared/logger';
 import type { LocateResultElement } from '@midscene/shared/types';
@@ -120,9 +121,6 @@ const promptsToChatParam = async (
 export async function AiLocateElement(options: {
   context: UIContext;
   targetElementDescription: TUserPrompt;
-  callAIFn: typeof callAIWithObjectResponse<
-    AIElementResponse | [number, number]
-  >;
   searchConfig?: Awaited<ReturnType<typeof AiLocateSection>>;
   modelConfig: IModelConfig;
 }): Promise<{
@@ -135,7 +133,7 @@ export async function AiLocateElement(options: {
   usage?: AIUsageInfo;
   reasoning_content?: string;
 }> {
-  const { context, targetElementDescription, callAIFn, modelConfig } = options;
+  const { context, targetElementDescription, modelConfig } = options;
   const { modelFamily } = modelConfig;
   const screenshotBase64 = context.screenshot.base64;
 
@@ -272,9 +270,16 @@ export async function AiLocateElement(options: {
     };
   }
 
-  let res: Awaited<ReturnType<typeof callAIFn>>;
+  let res: Awaited<
+    ReturnType<
+      typeof callAIWithObjectResponse<AIElementResponse | [number, number]>
+    >
+  >;
   try {
-    res = await callAIFn(msgs, modelConfig);
+    res = await callAIWithObjectResponse<AIElementResponse | [number, number]>(
+      msgs,
+      modelConfig,
+    );
   } catch (callError) {
     // Return error with usage and rawResponse if available
     const errorMessage =
@@ -318,6 +323,7 @@ export async function AiLocateElement(options: {
         originalImageWidth,
         originalImageHeight,
         modelFamily,
+        options.searchConfig?.scale,
       );
 
       debugInspect('resRect', resRect);
@@ -363,6 +369,7 @@ export async function AiLocateSection(options: {
 }): Promise<{
   rect?: Rect;
   imageBase64?: string;
+  scale?: number;
   error?: string;
   rawResponse: string;
   usage?: AIUsageInfo;
@@ -468,26 +475,48 @@ export async function AiLocateSection(options: {
     const mergedRect = mergeRects([targetRect, ...referenceRects]);
     debugSection('mergedRect %j', mergedRect);
 
-    // expand search area to at least 200 x 200
-    sectionRect = expandSearchArea(mergedRect, context.size, modelFamily);
+    sectionRect = expandSearchArea(mergedRect, context.size);
     debugSection('expanded sectionRect %j', sectionRect);
   }
 
   let imageBase64 = screenshotBase64;
+  let scale: number | undefined;
+
   if (sectionRect) {
+    const originalWidth = sectionRect.width;
+    const originalHeight = sectionRect.height;
+
     const croppedResult = await cropByRect(
       screenshotBase64,
       sectionRect,
       modelFamily === 'qwen2.5-vl',
     );
-    imageBase64 = croppedResult.imageBase64;
-    sectionRect.width = croppedResult.width;
-    sectionRect.height = croppedResult.height;
+
+    const scaleRatio = 2;
+    const scaledResult = await scaleImage(
+      croppedResult.imageBase64,
+      scaleRatio,
+    );
+
+    imageBase64 = scaledResult.imageBase64;
+    scale = scaleRatio;
+    sectionRect.width = scaledResult.width;
+    sectionRect.height = scaledResult.height;
+
+    debugSection(
+      'scaled sectionRect from %dx%d to %dx%d (scale=%d)',
+      originalWidth,
+      originalHeight,
+      sectionRect.width,
+      sectionRect.height,
+      scale,
+    );
   }
 
   return {
     rect: sectionRect,
     imageBase64,
+    scale,
     error: result.content.error,
     rawResponse: JSON.stringify(result.content),
     usage: result.usage,

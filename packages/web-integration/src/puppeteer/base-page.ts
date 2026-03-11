@@ -8,10 +8,6 @@ import type {
   Size,
   UIContext,
 } from '@midscene/core';
-import {
-  AiJudgeOrderSensitive,
-  callAIWithObjectResponse,
-} from '@midscene/core/ai-model';
 import type { AbstractInterface } from '@midscene/core/device';
 import { sleep } from '@midscene/core/utils';
 import {
@@ -19,7 +15,6 @@ import {
   DEFAULT_WAIT_FOR_NETWORK_IDLE_CONCURRENCY,
   DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT,
 } from '@midscene/shared/constants';
-import type { IModelConfig } from '@midscene/shared/env';
 import type { ElementInfo } from '@midscene/shared/extractor';
 import { treeToList } from '@midscene/shared/extractor';
 import { createImgBase64ByFormat } from '@midscene/shared/img';
@@ -32,26 +27,19 @@ import { assert } from '@midscene/shared/utils';
 import type { Page as PlaywrightPage } from 'playwright';
 import type { CDPSession, Protocol, Page as PuppeteerPage } from 'puppeteer';
 import {
+  type CacheFeatureOptions,
+  type WebElementCacheFeature,
+  buildRectFromElementInfo,
+  judgeOrderSensitive,
+  sanitizeXpaths,
+} from '../common/cache-helper';
+import {
   type KeyInput,
   type MouseButton,
   commonWebActionsForWebPage,
 } from '../web-page';
 
 export const debugPage = getDebug('web:page');
-
-type WebElementCacheFeature = ElementCacheFeature & {
-  xpaths?: string[];
-};
-
-const sanitizeXpaths = (xpaths: unknown): string[] => {
-  if (!Array.isArray(xpaths)) {
-    return [];
-  }
-
-  return xpaths.filter(
-    (xpath): xpath is string => typeof xpath === 'string' && xpath.length > 0,
-  );
-};
 
 export class Page<
   AgentType extends 'puppeteer' | 'playwright',
@@ -205,58 +193,26 @@ export class Page<
 
   async cacheFeatureForPoint(
     center: [number, number],
-    options?: {
-      targetDescription?: string;
-      modelConfig?: IModelConfig;
-    },
+    options?: CacheFeatureOptions,
   ): Promise<ElementCacheFeature> {
-    const point: Point = {
-      left: center[0],
-      top: center[1],
-    };
+    const point: Point = { left: center[0], top: center[1] };
 
     try {
-      // Determine isOrderSensitive
-      let isOrderSensitive = false;
-      if (options?.targetDescription && options?.modelConfig) {
-        try {
-          const judgeResult = await AiJudgeOrderSensitive(
-            options.targetDescription,
-            callAIWithObjectResponse,
-            options.modelConfig,
-          );
-          isOrderSensitive = judgeResult.isOrderSensitive;
-          debugPage(
-            'judged isOrderSensitive=%s for description: %s',
-            isOrderSensitive,
-            options.targetDescription,
-          );
-        } catch (error) {
-          debugPage('Failed to judge isOrderSensitive: %s', error);
-          // Fall back to false on error
-        }
-      }
-
+      const isOrderSensitive = await judgeOrderSensitive(options, debugPage);
       const xpaths = await this.getXpathsByPoint(point, isOrderSensitive);
       const sanitized = sanitizeXpaths(xpaths);
       if (!sanitized.length) {
         debugPage('cacheFeatureForPoint: no xpath found at point %o', center);
       }
-      return {
-        xpaths: sanitized,
-      };
+      return { xpaths: sanitized };
     } catch (error) {
       debugPage('cacheFeatureForPoint failed: %s', error);
-      return {
-        xpaths: [],
-      };
+      return { xpaths: [] };
     }
   }
 
   async rectMatchesCacheFeature(feature: ElementCacheFeature): Promise<Rect> {
-    const webFeature = feature as WebElementCacheFeature;
-    const xpaths = sanitizeXpaths(webFeature.xpaths);
-
+    const xpaths = sanitizeXpaths((feature as WebElementCacheFeature).xpaths);
     debugPage('rectMatchesCacheFeature: trying %d xpath(s)', xpaths.length);
 
     for (const xpath of xpaths) {
@@ -268,18 +224,7 @@ export class Page<
             'rectMatchesCacheFeature: found element, rect: %o',
             elementInfo.rect,
           );
-          const matchedRect: Rect = {
-            left: elementInfo.rect.left,
-            top: elementInfo.rect.top,
-            width: elementInfo.rect.width,
-            height: elementInfo.rect.height,
-          };
-
-          if (this.viewportSize?.dpr) {
-            matchedRect.dpr = this.viewportSize.dpr;
-          }
-
-          return matchedRect;
+          return buildRectFromElementInfo(elementInfo, this.viewportSize?.dpr);
         }
         debugPage(
           'rectMatchesCacheFeature: element found but no rect (elementInfo: %o)',
@@ -317,8 +262,8 @@ export class Page<
     if (this.viewportSize) return this.viewportSize;
     const sizeInfo: Size = await this.evaluate(() => {
       return {
-        width: document.documentElement.clientWidth,
-        height: document.documentElement.clientHeight,
+        width: window.innerWidth,
+        height: window.innerHeight,
         dpr: window.devicePixelRatio,
       };
     });
@@ -335,10 +280,6 @@ export class Page<
 
     let base64: string;
     if (this.interfaceType === 'puppeteer') {
-      // Bring tab to front to ensure it's actively rendering frames.
-      // Inactive tabs in Chrome don't produce frames, causing screenshot to hang.
-      // See: https://github.com/puppeteer/puppeteer/issues/12712
-      await (this.underlyingPage as PuppeteerPage).bringToFront();
       const result = await (this.underlyingPage as PuppeteerPage).screenshot({
         type: imgType,
         quality,
@@ -739,12 +680,24 @@ export class Page<
       try {
         await handler({
           accept: async (files: string[]) => {
+            // Get node information to check attributes
+            const { node } = await session.send('DOM.describeNode', {
+              backendNodeId: event.backendNodeId,
+            });
+            // attributes is a flat array: ['attr1', 'value1', 'attr2', 'value2', ...]
+
+            // Check if input has webkitdirectory attribute (Puppeteer doesn't support directory upload)
+            const hasWebkitDirectory =
+              node.attributes?.includes('webkitdirectory') ||
+              node.attributes?.includes('directory');
+            if (hasWebkitDirectory) {
+              throw new Error(
+                'Directory upload (webkitdirectory) is not supported in Puppeteer. Please use Playwright instead, which supports directory upload since version 1.45.',
+              );
+            }
+
             // Check if input supports multiple files
             if (files.length > 1) {
-              const { node } = await session.send('DOM.describeNode', {
-                backendNodeId: event.backendNodeId,
-              });
-              // attributes is a flat array: ['attr1', 'value1', 'attr2', 'value2', ...]
               const hasMultiple = node.attributes?.includes('multiple');
               if (!hasMultiple) {
                 throw new Error(

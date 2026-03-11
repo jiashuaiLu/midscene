@@ -10,19 +10,23 @@ import {
   PushpinFilled,
   PushpinOutlined,
   ReloadOutlined,
+  CloudUploadOutlined,
 } from '@ant-design/icons';
 import type { CodeGenerationChunk, StreamingCallback } from '@midscene/core';
 import type { ChromeRecordedEvent } from '@midscene/recorder';
 import { globalModelConfigManager } from '@midscene/shared/env';
-import { Button, Select, Tooltip, Typography, message } from 'antd';
+import { Button, Modal, Select, Tooltip, Typography, message } from 'antd';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useRecordingSessionStore } from '../../../store';
 import { generateAIDescription } from '../../../utils/eventOptimizer';
 import {
   generatePlaywrightTestStream,
+  generateTextCaseStream,
   generateYamlTestStream,
+  parseTextCaseFromJson,
 } from '../generators';
+import type { TextCase } from '../generators/textCaseGenerator';
 import { recordLogger } from '../logger';
 import {
   getLatestEvents,
@@ -32,6 +36,7 @@ import {
 import { generateRecordTitle } from '../utils';
 import { CodeBlock } from './ProgressModal/CodeBlock';
 import { StepList } from './ProgressModal/StepList';
+import { TextCaseView } from './TextCaseView';
 
 export interface ProgressStep {
   id: string;
@@ -42,7 +47,7 @@ export interface ProgressStep {
   details?: string;
 }
 
-export type CodeGenerationType = 'yaml' | 'playwright' | 'none';
+export type CodeGenerationType = 'yaml' | 'playwright' | 'textCase' | 'none';
 
 interface ProgressModalProps {
   eventsCount?: number;
@@ -61,13 +66,13 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
   onStopRecording,
   isFromStopRecording,
 }) => {
-  const [selectedType, setSelectedType] = useState<CodeGenerationType>('yaml');
+  const [selectedType, setSelectedType] = useState<CodeGenerationType>('textCase');
 
   // Initialize defaultType from localStorage
   const [defaultType, setDefaultType] = useState<CodeGenerationType>(() => {
     try {
       const stored = localStorage.getItem('midscene-default-code-type');
-      if (stored && ['yaml', 'playwright', 'none'].includes(stored)) {
+      if (stored && ['yaml', 'playwright', 'none', 'textCase'].includes(stored)) {
         return stored as CodeGenerationType;
       }
     } catch (error) {
@@ -76,7 +81,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
         error,
       );
     }
-    return 'yaml'; // fallback default
+    return 'textCase'; // fallback default
   });
   const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
   const [slidingOutSteps, setSlidingOutSteps] = useState<Set<string>>(
@@ -85,6 +90,8 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedTest, setGeneratedTest] = useState('');
   const [generatedYaml, setGeneratedYaml] = useState('');
+  const [generatedTextCase, setGeneratedTextCase] = useState<TextCase | null>(null);
+  const [generatedTextCaseJson, setGeneratedTextCaseJson] = useState('');
   const [steps, setSteps] = useState<ProgressStep[]>([]);
   const [showGeneratedCode, setShowGeneratedCode] = useState(false);
 
@@ -95,7 +102,124 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
   const [actualCode, setActualCode] = useState('');
   const [accumulatedThinking, setAccumulatedThinking] = useState('');
 
+  // TextCase sync states
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [generatedJsScript, setGeneratedJsScript] = useState('');
+  const [syncedCaseId, setSyncedCaseId] = useState<number | null>(null);
+
   const { updateSession } = useRecordingSessionStore();
+
+  const handleSyncToDonggui = async (): Promise<{ success: boolean; caseId?: number; cancelled?: boolean }> => {
+    if (!generatedTextCase || !generatedTextCaseJson) {
+      message.warning('没有可同步的测试用例');
+      return { success: false };
+    }
+
+    return new Promise((resolve) => {
+      Modal.confirm({
+        title: null,
+        icon: null,
+        content: (
+          <div className="sync-form">
+            <div className="sync-form-item">
+              <label>ERP：</label>
+              <input 
+                id="sync-operator" 
+                type="text" 
+                placeholder="请输入erp"
+                defaultValue=""
+                style={{ width: '100%', padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: '4px' }}
+              />
+            </div>
+            <div className="sync-form-item" style={{ marginTop: '12px' }}>
+              <label>应用：</label>
+              <select 
+                id="sync-app-name"
+                defaultValue="京东"
+                style={{ width: '100%', padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: '4px' }}
+              >
+                <option value="">请选择应用</option>
+                <option value="京东">京东商城</option>
+                <option value="京麦">京麦</option>
+                <option value="赔付系统">赔付系统</option>
+                <option value="采销">采销</option>
+                <option value="招商门户">招商门户</option>
+                <option value="UAD工作台">UAD工作台</option>
+                <option value="Joybuy">Joybuy</option>
+              </select>
+            </div>
+          </div>
+        ),
+        okText: '同步',
+        cancelText: '取消',
+        onOk: async () => {
+          const operatorInput = document.getElementById('sync-operator') as HTMLInputElement;
+          const appNameSelect = document.getElementById('sync-app-name') as HTMLSelectElement;
+          
+          const operator = operatorInput?.value || '';
+          const appName = appNameSelect?.value || '京东';
+
+          if (!operator) {
+            message.error('请输入操作人');
+            return Promise.reject();
+          }
+
+          setIsSyncing(true);
+          try {
+            const response = await fetch('https://joy-ai-test.jd.com/case/add', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                caseTitle: generatedTextCase.caseTitle,
+                caseDetail: generatedTextCaseJson,
+                autoCaseDetail: generatedJsScript,
+                appName: appName,
+                priority: parseInt(generatedTextCase.casePriority) || 2,
+                platform: generatedTextCase.platform || 1,
+                caseType: 1,
+                yamlScript: '',
+                operator: operator,
+                isJoyTest: true,
+              }),
+            });
+
+            if (response.ok) {
+              const result = await response.json();
+              if (result.code === 200) {
+                const caseId = result.data?.id || result.data?.caseId;
+                if (caseId) {
+                  setSyncedCaseId(caseId);
+                }
+                resolve({ success: true, caseId });
+              } else {
+                message.error(`同步失败: ${result.message || '未知错误'}`);
+                resolve({ success: false });
+              }
+            } else {
+              message.error(`同步失败: HTTP ${response.status}`);
+              resolve({ success: false });
+            }
+          } catch (error) {
+            console.error('Sync error:', error);
+            message.error(`同步失败: ${error instanceof Error ? error.message : '网络错误'}`);
+            resolve({ success: false });
+          } finally {
+            setIsSyncing(false);
+          }
+        },
+        onCancel: () => {
+          resolve({ success: false, cancelled: true });
+        },
+      });
+    });
+  };
+
+  const handleNavigateToDetail = (caseId: number) => {
+    const url = chrome.runtime.getURL(`index.html#/scripts/${caseId}`);
+    chrome.tabs.create({ url });
+  };
   // Function to update defaultType and persist to localStorage
   const updateDefaultType = (newType: CodeGenerationType) => {
     setDefaultType(newType);
@@ -132,7 +256,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
     if (isFromStopRecording && eventsCount > 0) {
       setSelectedType(defaultType);
       // Only generate code if the pinned default is not 'none'
-      if (defaultType === 'playwright' || defaultType === 'yaml') {
+      if (defaultType === 'playwright' || defaultType === 'yaml' || defaultType === 'textCase') {
         handleGenerateCode(defaultType);
       }
       return;
@@ -152,6 +276,13 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
       if (session.generatedCode.yaml && !generatedYaml) {
         setGeneratedYaml(session.generatedCode.yaml);
       }
+      if (session.generatedCode.textCase && !generatedTextCaseJson) {
+        const parsed = parseTextCaseFromJson(session.generatedCode.textCase);
+        if (parsed) {
+          setGeneratedTextCase(parsed);
+          setGeneratedTextCaseJson(session.generatedCode.textCase);
+        }
+      }
     }
 
     // Check if the pinned default type has generated code
@@ -160,7 +291,9 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
         ? generatedYaml || session?.generatedCode?.yaml
         : defaultType === 'playwright'
           ? generatedTest || session?.generatedCode?.playwright
-          : false;
+          : defaultType === 'textCase'
+            ? generatedTextCaseJson || session?.generatedCode?.textCase
+            : false;
 
     // If the pinned default type has code, show it directly
     if (hasDefaultTypeCode) {
@@ -172,7 +305,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
     // If the pinned default type doesn't have code and we have events, generate it
     if (
       eventsCount > 0 &&
-      (defaultType === 'playwright' || defaultType === 'yaml')
+      (defaultType === 'playwright' || defaultType === 'yaml' || defaultType === 'textCase')
     ) {
       setSelectedType(defaultType);
       handleGenerateCode(defaultType);
@@ -391,7 +524,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
     };
 
   // Common function to handle code generation with streaming support
-  const handleCodeGeneration = async (type: 'playwright' | 'yaml') => {
+  const handleCodeGeneration = async (type: 'playwright' | 'yaml' | 'textCase') => {
     // Get the most current events
     const currentEvents = getCurrentEvents();
 
@@ -426,11 +559,15 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
         title:
           type === 'playwright'
             ? 'Generate Playwright Code'
-            : 'Generate YAML Configuration',
+            : type === 'textCase'
+              ? 'Generate Text Test Case'
+              : 'Generate YAML Configuration',
         description:
           type === 'playwright'
             ? 'Creating executable Playwright test code'
-            : 'Creating YAML configuration',
+            : type === 'textCase'
+              ? 'Creating user-friendly test case'
+              : 'Creating YAML configuration',
         status: 'pending',
       },
     ];
@@ -444,8 +581,11 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
     // Only clear the code that we're about to regenerate, preserve the other type
     if (type === 'playwright') {
       setGeneratedTest('');
-    } else {
+    } else if (type === 'yaml') {
       setGeneratedYaml('');
+    } else if (type === 'textCase') {
+      setGeneratedTextCase(null);
+      setGeneratedTextCaseJson('');
     }
 
     try {
@@ -492,7 +632,9 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
         details:
           type === 'playwright'
             ? 'Generating Playwright test code...'
-            : 'Generating YAML configuration...',
+            : type === 'textCase'
+              ? 'Generating text test case...'
+              : 'Generating YAML configuration...',
       });
 
       finalEvents = getCurrentEvents();
@@ -513,6 +655,37 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
           defaultModelConfig,
         );
         generatedCode = streamingResult.content;
+      } else if (type === 'textCase') {
+        // Use streaming for Text Case
+        const streamingResult = await generateTextCaseStream(
+          finalEvents,
+          {
+            stream: true,
+            onChunk: (chunk) => {
+              setStreamingContent(chunk.accumulated);
+              if (chunk.reasoning_content) {
+                setAccumulatedThinking((prev) => prev + chunk.reasoning_content);
+              }
+              setActualCode(chunk.accumulated);
+              if (chunk.isComplete) {
+                const parsed = parseTextCaseFromJson(chunk.accumulated);
+                if (parsed) {
+                  setGeneratedTextCase(parsed);
+                  setGeneratedTextCaseJson(chunk.accumulated);
+                }
+              }
+            },
+            testName: currentSessionName,
+          },
+          defaultModelConfig,
+        );
+        generatedCode = streamingResult.content;
+        // Try to parse the result
+        const parsed = parseTextCaseFromJson(generatedCode);
+        if (parsed) {
+          setGeneratedTextCase(parsed);
+          setGeneratedTextCaseJson(generatedCode);
+        }
       } else {
         // Use streaming for YAML
         const streamingResult = await generateYamlTestStream(
@@ -531,10 +704,12 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
 
       // Update session with generated code if sessionId exists
       if (sessionId) {
+        // For textCase, use generatedCode directly since setState is async
+        const codeToUpdate = type === 'textCase' ? generatedCode : generatedCode;
         updateSession(sessionId, {
           generatedCode: {
             ...getCurrentSession()?.generatedCode,
-            [type]: generatedCode,
+            [type]: codeToUpdate,
           },
           updatedAt: Date.now(),
         });
@@ -543,7 +718,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
       // Set the generated code in state
       if (type === 'playwright') {
         setGeneratedTest(generatedCode);
-      } else {
+      } else if (type === 'yaml') {
         setGeneratedYaml(generatedCode);
       }
 
@@ -556,9 +731,12 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
       setShowGeneratedCode(true);
 
       // Show success message
-      message.success(
-        `AI ${type === 'playwright' ? 'Playwright test' : 'YAML configuration'} generated successfully!`,
-      );
+      const typeLabel = type === 'playwright' 
+        ? 'Playwright test' 
+        : type === 'textCase' 
+          ? 'Text test case' 
+          : 'YAML configuration';
+      message.success(`AI ${typeLabel} generated successfully!`);
     } catch (error) {
       recordLogger.error(`Failed to generate ${type}`, undefined, error);
 
@@ -653,6 +831,17 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
     await handleCodeGeneration('yaml');
   };
 
+  // Handle text case change from TextCaseView
+  const handleTextCaseChange = (updatedTextCase: TextCase) => {
+    setGeneratedTextCase(updatedTextCase);
+    setGeneratedTextCaseJson(JSON.stringify(updatedTextCase, null, 2));
+  };
+
+  // Handle JS script generated from TextCaseView
+  const handleJsScriptGenerated = (jsScript: string) => {
+    setGeneratedJsScript(jsScript);
+  };
+
   // Monitor step completion state changes, add sliding animation
   useEffect(() => {
     steps.forEach((step) => {
@@ -698,6 +887,16 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
           handleGenerateCode(value);
         }
       }
+    } else if (value === 'textCase') {
+      // Check if text case exists
+      if (generatedTextCase) {
+        setShowGeneratedCode(true);
+      } else {
+        setShowGeneratedCode(false);
+        if (!isGenerating) {
+          handleGenerateCode(value);
+        }
+      }
     } else if (value === 'none') {
       setShowGeneratedCode(false);
       // Don't clear generated code when selecting 'none', preserve it for future switches
@@ -722,6 +921,14 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
         </>
       ),
       value: 'yaml' as const,
+    },
+    {
+      label: (
+        <>
+          <FileTextOutlined className="text-orange-500" /> Text Case
+        </>
+      ),
+      value: 'textCase' as const,
     },
     { label: 'None', value: 'none' as const },
   ];
@@ -899,6 +1106,49 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
                   />
                 </div>
               )}
+            {selectedType === 'textCase' && (showGeneratedCode || isStreaming) && (
+              <div className="flex gap-0.2 ml-auto">
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => {
+                    if (generatedTextCaseJson) {
+                      navigator.clipboard.writeText(generatedTextCaseJson);
+                      message.success('测试用例已复制到剪贴板');
+                    }
+                  }}
+                  className="!border-none !bg-none !shadow-none"
+                  disabled={isStreaming || !generatedTextCaseJson}
+                  title="复制到剪贴板"
+                />
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={() => handleCodeGeneration('textCase')}
+                  disabled={isGenerating || isStreaming}
+                  className="!border-none !bg-none !shadow-none"
+                  title="重新生成"
+                />
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  className="!border-none !bg-none !shadow-none"
+                  onClick={() => {
+                    const downloadSessionName = resolveSessionName(sessionName, sessionId);
+                    const dataBlob = new Blob([generatedTextCaseJson], { type: 'application/json' });
+                    const url = URL.createObjectURL(dataBlob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `${downloadSessionName}-test-case.json`;
+                    link.click();
+                    URL.revokeObjectURL(url);
+                    message.success('测试用例已下载');
+                  }}
+                  disabled={isStreaming || !generatedTextCaseJson}
+                  title="下载 JSON"
+                />
+              </div>
+            )}
           </div>
           {selectedType === 'none' && (
             <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded text-yellow-800 text-sm">
@@ -975,6 +1225,20 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
                 stepDisplay={thirdStepStarted || steps.length === 0}
               />
             )}
+          {selectedType === 'textCase' && (
+            <TextCaseView
+              textCase={generatedTextCase}
+              loading={isGenerating && !generatedTextCase}
+              isStreaming={isStreaming && selectedType === 'textCase'}
+              streamingContent={streamingContent}
+              onTextCaseChange={handleTextCaseChange}
+              onJsScriptGenerated={handleJsScriptGenerated}
+              jsScript={generatedJsScript}
+              onSync={handleSyncToDonggui}
+              onNavigateToDetail={handleNavigateToDetail}
+              syncedCaseId={syncedCaseId}
+            />
+          )}
         </>
       )}
     </>

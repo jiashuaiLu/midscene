@@ -4,8 +4,6 @@ import { ScriptPlayer, parseYamlScript } from '@midscene/core/yaml';
 import { createServer } from 'http-server';
 
 import assert from 'node:assert';
-import { agentFromAdbDevice } from '@midscene/android';
-import { agentFromComputer } from '@midscene/computer';
 import type {
   AgentOpt,
   FreeFn,
@@ -16,11 +14,10 @@ import type {
 import { createAgent } from '@midscene/core/agent';
 import type { AbstractInterface } from '@midscene/core/device';
 import { processCacheConfig } from '@midscene/core/utils';
-import { agentFromWebDriverAgent } from '@midscene/ios';
 import { getDebug } from '@midscene/shared/logger';
 import { AgentOverChromeBridge } from '@midscene/web/bridge-mode';
 import { puppeteerAgentForTarget } from '@midscene/web/puppeteer-agent-launcher';
-import type { Browser } from 'puppeteer';
+import type { Browser, Page } from 'puppeteer';
 
 export interface SingleYamlExecutionResult {
   success: boolean;
@@ -79,6 +76,7 @@ export async function createYamlPlayer(
     headed?: boolean;
     keepWindow?: boolean;
     browser?: Browser;
+    page?: Page;
     testId?: string;
   },
 ): Promise<ScriptPlayer<MidsceneYamlScriptEnv>> {
@@ -175,6 +173,7 @@ export async function createYamlPlayer(
               ),
             },
             options?.browser,
+            options?.page,
           );
           freeFn.push(...newFreeFn);
 
@@ -188,15 +187,15 @@ export async function createYamlPlayer(
 
         if (
           webTarget.userAgent ||
-          webTarget.viewportWidth ||
-          webTarget.viewportHeight ||
-          webTarget.viewportScale ||
+          webTarget.viewportWidth != null ||
+          webTarget.viewportHeight != null ||
+          webTarget.deviceScaleFactor != null ||
           webTarget.waitForNetworkIdle ||
           webTarget.cookie ||
           webTarget.chromeArgs
         ) {
           console.warn(
-            'puppeteer options (userAgent, viewportWidth, viewportHeight, viewportScale, waitForNetworkIdle, cookie, chromeArgs) are not supported in bridge mode. They will be ignored.',
+            'puppeteer options (userAgent, viewportWidth, viewportHeight, deviceScaleFactor, waitForNetworkIdle, cookie, chromeArgs) are not supported in bridge mode. They will be ignored.',
           );
         }
 
@@ -232,6 +231,7 @@ export async function createYamlPlayer(
       // handle android
       if (typeof clonedYamlScript.android !== 'undefined') {
         const androidTarget = clonedYamlScript.android;
+        const { agentFromAdbDevice } = await import('@midscene/android');
         const agent = await agentFromAdbDevice(androidTarget?.deviceId, {
           ...androidTarget, // Pass all Android config options
           ...buildAgentOptions(
@@ -256,6 +256,7 @@ export async function createYamlPlayer(
       // handle iOS
       if (typeof clonedYamlScript.ios !== 'undefined') {
         const iosTarget = clonedYamlScript.ios;
+        const { agentFromWebDriverAgent } = await import('@midscene/ios');
         const agent = await agentFromWebDriverAgent({
           ...iosTarget, // Pass all iOS config options
           ...buildAgentOptions(
@@ -280,6 +281,7 @@ export async function createYamlPlayer(
       // handle computer
       if (typeof clonedYamlScript.computer !== 'undefined') {
         const computerTarget = clonedYamlScript.computer;
+        const { agentFromComputer } = await import('@midscene/computer');
         const agent = await agentFromComputer({
           ...computerTarget,
           ...buildAgentOptions(

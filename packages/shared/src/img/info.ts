@@ -1,42 +1,8 @@
 import assert from 'node:assert';
-import { Buffer } from 'node:buffer';
-import type Jimp from 'jimp';
 import type { Size } from '../types';
-import getJimp from './get-jimp';
-import { readImageBuffer } from './safe-jimp';
+import getPhoton from './get-photon';
 
-export interface ImageInfo extends Size {
-  jimpImage: Jimp;
-}
-
-/**
- * Retrieves the dimensions of an image asynchronously
- *
- * @param image - The image data, which can be a string path or a buffer
- * @returns A Promise that resolves to an object containing the width and height of the image
- * @throws Error if the image data is invalid
- */
-export async function imageInfo(
-  image: string | Buffer | Jimp,
-): Promise<ImageInfo> {
-  const Jimp = await getJimp();
-  let jimpImage: Jimp;
-  if (typeof image === 'string') {
-    jimpImage = await Jimp.read(image);
-  } else if (Buffer.isBuffer(image)) {
-    jimpImage = await readImageBuffer(image, Jimp);
-  } else if (image instanceof Jimp) {
-    jimpImage = image;
-  } else {
-    throw new Error('Invalid image input: must be a string path or a Buffer');
-  }
-  const { width, height } = jimpImage.bitmap;
-  assert(
-    width && height,
-    `Invalid image: ${typeof image === 'string' ? image : 'Buffer'}`,
-  );
-  return { width, height, jimpImage };
-}
+export interface ImageInfo extends Size {}
 
 /**
  * Retrieves the dimensions of an image from a base64-encoded string
@@ -48,15 +14,16 @@ export async function imageInfo(
 export async function imageInfoOfBase64(
   imageBase64: string,
 ): Promise<ImageInfo> {
-  // const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-  // Call the imageInfo function to get the dimensions of the image
-  const buffer = await bufferFromBase64(imageBase64);
-  return imageInfo(buffer);
-}
-
-export async function bufferFromBase64(imageBase64: string): Promise<Buffer> {
+  const { PhotonImage } = await getPhoton();
   const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-  return Buffer.from(base64Data, 'base64');
+  // Support both sync (Photon) and async (Canvas fallback) versions
+  const result = PhotonImage.new_from_base64(base64Data);
+  const image = result instanceof Promise ? await result : result;
+  const width = image.get_width();
+  const height = image.get_height();
+  image.free();
+  assert(width && height, 'Invalid image: cannot get width or height');
+  return { width, height };
 }
 
 /**
@@ -82,4 +49,27 @@ export function isValidPNGImageBuffer(buffer: Buffer): boolean {
     buffer[7] === 0x0a;
 
   return isPNG;
+}
+
+/**
+ * Check if the Buffer is a valid JPEG image
+ * @param buffer The Buffer to check
+ * @returns true if the Buffer is a valid JPEG image, otherwise false
+ */
+export function isValidJPEGImageBuffer(buffer: Buffer): boolean {
+  if (!buffer || buffer.length < 3) {
+    return false;
+  }
+
+  // Check JPEG signature (3 bytes): FF D8 FF
+  return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+}
+
+/**
+ * Check if the Buffer is a valid image (PNG or JPEG)
+ * @param buffer The Buffer to check
+ * @returns true if the Buffer is a valid PNG or JPEG image, otherwise false
+ */
+export function isValidImageBuffer(buffer: Buffer): boolean {
+  return isValidPNGImageBuffer(buffer) || isValidJPEGImageBuffer(buffer);
 }

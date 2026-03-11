@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import {
   type DeviceAction,
@@ -25,7 +26,6 @@ import {
 import { sleep } from '@midscene/core/utils';
 import { createImgBase64ByFormat } from '@midscene/shared/img';
 import { getDebug } from '@midscene/shared/logger';
-import clipboardy from 'clipboardy';
 import screenshot from 'screenshot-desktop';
 
 // Type definitions
@@ -64,9 +64,89 @@ const SCROLL_REPEAT_COUNT = 10;
 const SCROLL_STEP_DELAY = 100;
 const SCROLL_COMPLETE_DELAY = 500;
 
-// Input strategy constants
-const INPUT_STRATEGY_ALWAYS_CLIPBOARD = 'always-clipboard';
-const INPUT_STRATEGY_CLIPBOARD_FOR_NON_ASCII = 'clipboard-for-non-ascii';
+// macOS AppleScript key code mapping
+// Reference: https://eastmanreference.com/complete-list-of-applescript-key-codes
+const APPLESCRIPT_KEY_CODE_MAP: Record<string, number> = {
+  // Special keys
+  return: 36,
+  enter: 36,
+  tab: 48,
+  space: 49,
+  backspace: 51,
+  delete: 51,
+  escape: 53,
+  forwarddelete: 117,
+
+  // Arrow keys
+  left: 123,
+  right: 124,
+  down: 125,
+  up: 126,
+
+  // Navigation keys
+  home: 115,
+  end: 119,
+  pageup: 116,
+  pagedown: 121,
+
+  // Function keys
+  f1: 122,
+  f2: 120,
+  f3: 99,
+  f4: 118,
+  f5: 96,
+  f6: 97,
+  f7: 98,
+  f8: 100,
+  f9: 101,
+  f10: 109,
+  f11: 103,
+  f12: 111,
+};
+
+// Modifier key mapping for AppleScript
+const APPLESCRIPT_MODIFIER_MAP: Record<string, string> = {
+  command: 'command down',
+  cmd: 'command down',
+  control: 'control down',
+  ctrl: 'control down',
+  shift: 'shift down',
+  alt: 'option down',
+  option: 'option down',
+  meta: 'command down',
+};
+
+/**
+ * Send a key press using AppleScript (macOS only)
+ * More reliable than libnut for TUI applications like Bubble Tea
+ */
+function sendKeyViaAppleScript(key: string, modifiers: string[] = []): void {
+  const lowerKey = key.toLowerCase();
+  const keyCode = APPLESCRIPT_KEY_CODE_MAP[lowerKey];
+
+  // Build modifier string
+  const modifierParts = modifiers
+    .map((m) => APPLESCRIPT_MODIFIER_MAP[m.toLowerCase()])
+    .filter(Boolean);
+  const modifierStr =
+    modifierParts.length > 0 ? ` using {${modifierParts.join(', ')}}` : '';
+
+  let script: string;
+
+  if (keyCode !== undefined) {
+    // Use key code for special keys
+    script = `tell application "System Events" to key code ${keyCode}${modifierStr}`;
+  } else if (lowerKey.length === 1) {
+    // Use keystroke for single characters (letters, numbers, symbols)
+    script = `tell application "System Events" to keystroke "${key}"${modifierStr}`;
+  } else {
+    // Fallback: try as keystroke
+    script = `tell application "System Events" to keystroke "${key}"${modifierStr}`;
+  }
+
+  debugDevice('sendKeyViaAppleScript', { key, modifiers, script });
+  execSync(`osascript -e '${script}'`);
+}
 
 // Lazy load libnut with fallback
 let libnut: LibNut | null = null;
@@ -190,7 +270,12 @@ export interface ComputerDeviceOpt {
   displayId?: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   customActions?: DeviceAction<any>[];
-  inputStrategy?: 'always-clipboard' | 'clipboard-for-non-ascii';
+  /**
+   * Keyboard driver for sending key events (macOS only)
+   * - 'applescript': Use AppleScript via osascript (default on macOS, more reliable)
+   * - 'libnut': Use libnut's keyTap (faster but may not work with some TUI apps)
+   */
+  keyboardDriver?: 'applescript' | 'libnut';
 }
 
 export class ComputerDevice implements AbstractInterface {
@@ -199,11 +284,18 @@ export class ComputerDevice implements AbstractInterface {
   private displayId?: string;
   private description?: string;
   private destroyed = false;
+  /**
+   * On macOS, use AppleScript for keyboard operations by default
+   * to avoid focus issues with system overlays (e.g. Spotlight).
+   */
+  private useAppleScript: boolean;
   uri?: string;
 
   constructor(options?: ComputerDeviceOpt) {
     this.options = options;
     this.displayId = options?.displayId;
+    this.useAppleScript =
+      process.platform === 'darwin' && options?.keyboardDriver !== 'libnut';
   }
 
   describe(): string {
@@ -249,9 +341,67 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
       debugDevice(`Failed to connect: ${error}`);
       throw new Error(`Unable to connect to computer device: ${error}`);
     }
+
+    // Health check: verify screenshot and mouse control are working
+    await this.healthCheck();
+  }
+
+  private async healthCheck(): Promise<void> {
+    console.log('[HealthCheck] Starting health check...');
+
+    // Step 1: Take a screenshot
+    console.log('[HealthCheck] Taking screenshot...');
+    try {
+      const base64 = await this.screenshotBase64();
+      console.log(
+        `[HealthCheck] Screenshot succeeded (length=${base64.length})`,
+      );
+    } catch (error) {
+      console.error(`[HealthCheck] Screenshot failed: ${error}`);
+      process.exit(1);
+    }
+
+    // Step 2: Move the mouse
+    console.log('[HealthCheck] Moving mouse...');
+    try {
+      assert(libnut, 'libnut not initialized');
+      const startPos = libnut.getMousePos();
+      console.log(
+        `[HealthCheck] Current mouse position: (${startPos.x}, ${startPos.y})`,
+      );
+
+      // Move the mouse by a small random offset, then move it back
+      const offsetX = Math.floor(Math.random() * 40) + 10;
+      const offsetY = Math.floor(Math.random() * 40) + 10;
+      const targetX = startPos.x + offsetX;
+      const targetY = startPos.y + offsetY;
+
+      console.log(`[HealthCheck] Moving mouse to (${targetX}, ${targetY})...`);
+      libnut.moveMouse(targetX, targetY);
+      await sleep(50);
+
+      const movedPos = libnut.getMousePos();
+      console.log(
+        `[HealthCheck] Mouse position after move: (${movedPos.x}, ${movedPos.y})`,
+      );
+
+      // Restore original position
+      libnut.moveMouse(startPos.x, startPos.y);
+      console.log(
+        `[HealthCheck] Mouse restored to (${startPos.x}, ${startPos.y})`,
+      );
+    } catch (error) {
+      console.error(`[HealthCheck] Mouse move failed: ${error}`);
+      process.exit(1);
+    }
+
+    console.log('[HealthCheck] Health check passed');
   }
 
   async screenshotBase64(): Promise<string> {
+    if (this.destroyed) {
+      throw new Error('ComputerDevice has been destroyed');
+    }
     debugDevice('Taking screenshot', { displayId: this.displayId });
 
     try {
@@ -296,16 +446,6 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
   }
 
   /**
-   * Check if text contains non-ASCII characters
-   * Matches: Chinese, Japanese, Korean, Latin extended characters (café, niño), emoji, etc.
-   */
-  private shouldUseClipboardForText(text: string): boolean {
-    // Check for any character with code point >= 128 (non-ASCII)
-    const hasNonAscii = /[\x80-\uFFFF]/.test(text);
-    return hasNonAscii;
-  }
-
-  /**
    * Type text via clipboard (paste)
    * This method:
    * 1. Saves the old clipboard content
@@ -320,22 +460,27 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
       preview: text.substring(0, 20),
     });
 
+    const clipboardy = await import('clipboardy');
     // 1. Save old clipboard content
-    const oldClipboard = await clipboardy.read().catch(() => '');
+    const oldClipboard = await clipboardy.default.read().catch(() => '');
 
     try {
       // 2. Write new content to clipboard
-      await clipboardy.write(text);
+      await clipboardy.default.write(text);
       await sleep(50);
 
       // 3. Simulate paste shortcut
-      const modifier = process.platform === 'darwin' ? 'command' : 'control';
-      libnut.keyTap('v', [modifier]);
+      if (this.useAppleScript) {
+        sendKeyViaAppleScript('v', ['command']);
+      } else {
+        const modifier = process.platform === 'darwin' ? 'command' : 'control';
+        libnut.keyTap('v', [modifier]);
+      }
       await sleep(100);
     } finally {
       // 4. Restore old clipboard content
       if (oldClipboard) {
-        await clipboardy.write(oldClipboard).catch(() => {
+        await clipboardy.default.write(oldClipboard).catch(() => {
           // Silent fail - don't affect main flow
           debugDevice('Failed to restore clipboard content');
         });
@@ -344,36 +489,13 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
   }
 
   /**
-   * Smart type string with platform-specific strategy
-   * - macOS: Always use libnut (native support for non-ASCII)
-   * - Windows/Linux: Use clipboard for non-ASCII characters
+   * Always use clipboard paste to input text, avoiding IME interference.
+   * Keystroke-based input (AppleScript/libnut) goes through the active input method,
+   * which can swallow characters or convert them when a non-English IME is active.
    */
   private async smartTypeString(text: string): Promise<void> {
     assert(libnut, 'libnut not initialized');
-
-    // macOS: use libnut directly (native Chinese support)
-    if (process.platform === 'darwin') {
-      libnut.typeString(text);
-      return;
-    }
-
-    // Windows/Linux: use smart strategy
-    const inputStrategy =
-      this.options?.inputStrategy ?? INPUT_STRATEGY_CLIPBOARD_FOR_NON_ASCII;
-
-    if (inputStrategy === INPUT_STRATEGY_ALWAYS_CLIPBOARD) {
-      await this.typeViaClipboard(text);
-      return;
-    }
-
-    // clipboard-for-non-ascii strategy: intelligent detection
-    const shouldUseClipboard = this.shouldUseClipboardForText(text);
-
-    if (shouldUseClipboard) {
-      await this.typeViaClipboard(text);
-    } else {
-      libnut.typeString(text);
-    }
+    await this.typeViaClipboard(text);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -464,20 +586,28 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
           assert(libnut, 'libnut not initialized');
           const element = param.locate as LocateResultElement | undefined;
 
-          if (element && param.mode !== 'append') {
-            // Click and clear
+          if (element) {
+            // Always click to ensure focus
             const [x, y] = element.center;
             libnut.moveMouse(Math.round(x), Math.round(y));
             libnut.mouseClick('left');
             await sleep(INPUT_FOCUS_DELAY);
 
-            // Select all and delete
-            const modifier =
-              process.platform === 'darwin' ? 'command' : 'control';
-            libnut.keyTap('a', [modifier]);
-            await sleep(50);
-            libnut.keyTap('backspace');
-            await sleep(INPUT_CLEAR_DELAY);
+            if (param.mode !== 'append') {
+              // Select all and delete
+              if (this.useAppleScript) {
+                sendKeyViaAppleScript('a', ['command']);
+                await sleep(50);
+                sendKeyViaAppleScript('backspace', []);
+              } else {
+                const modifier =
+                  process.platform === 'darwin' ? 'command' : 'control';
+                libnut.keyTap('a', [modifier]);
+                await sleep(50);
+                libnut.keyTap('backspace');
+              }
+              await sleep(INPUT_CLEAR_DELAY);
+            }
           }
 
           if (param.mode === 'clear') {
@@ -566,12 +696,19 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
           original: param.keyName,
           key,
           modifiers,
+          driver: this.useAppleScript ? 'applescript' : 'libnut',
         });
 
-        if (modifiers.length > 0) {
-          libnut.keyTap(key, modifiers);
+        if (this.useAppleScript) {
+          // Use AppleScript for all keys on macOS when keyboardDriver is 'applescript'
+          sendKeyViaAppleScript(key, modifiers);
         } else {
-          libnut.keyTap(key);
+          // Use libnut (default)
+          if (modifiers.length > 0) {
+            libnut.keyTap(key, modifiers);
+          } else {
+            libnut.keyTap(key);
+          }
         }
       }),
 
@@ -605,9 +742,16 @@ Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', 
         libnut.mouseClick('left');
         await sleep(100);
 
-        const modifier = process.platform === 'darwin' ? 'command' : 'control';
-        libnut.keyTap('a', [modifier]);
-        libnut.keyTap('backspace');
+        if (this.useAppleScript) {
+          sendKeyViaAppleScript('a', ['command']);
+          await sleep(50);
+          sendKeyViaAppleScript('backspace', []);
+        } else {
+          const modifier =
+            process.platform === 'darwin' ? 'command' : 'control';
+          libnut.keyTap('a', [modifier]);
+          libnut.keyTap('backspace');
+        }
         await sleep(50);
       }),
     ];

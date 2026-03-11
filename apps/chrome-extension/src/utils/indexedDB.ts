@@ -275,13 +275,19 @@ class IndexedDBManager {
       }
     }
 
+    // Deep clone session to ensure only serializable data is saved
+    const serializableSession = JSON.parse(JSON.stringify(session));
+
     return new Promise((resolve, reject) => {
       const transaction = db.transaction([SESSIONS_STORE], 'readwrite');
       const store = transaction.objectStore(SESSIONS_STORE);
-      const request = store.add(session);
+      const request = store.add(serializableSession);
 
       request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      request.onerror = () => {
+        console.error('Failed to add session to IndexedDB:', request.error);
+        reject(request.error);
+      };
     });
   }
 
@@ -315,13 +321,19 @@ class IndexedDBManager {
       };
     }
 
+    // Deep clone session to ensure only serializable data is saved
+    const serializableSession = JSON.parse(JSON.stringify(existingSession));
+
     return new Promise((resolve, reject) => {
       const transaction = db.transaction([SESSIONS_STORE], 'readwrite');
       const store = transaction.objectStore(SESSIONS_STORE);
-      const request = store.put(existingSession);
+      const request = store.put(serializableSession);
 
       request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      request.onerror = () => {
+        console.error('Failed to update session in IndexedDB:', request.error);
+        reject(request.error);
+      };
     });
   }
 

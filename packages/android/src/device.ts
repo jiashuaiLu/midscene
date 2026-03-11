@@ -18,11 +18,14 @@ import {
   type AndroidDeviceOpt,
   defineAction,
   defineActionClearInput,
+  defineActionCursorMove,
   defineActionDoubleClick,
   defineActionDragAndDrop,
   defineActionKeyboardPress,
   defineActionScroll,
+  defineActionSwipe,
   defineActionTap,
+  normalizeMobileSwipeParam,
 } from '@midscene/core/device';
 import { getTmpFile, sleep } from '@midscene/core/utils';
 import {
@@ -35,7 +38,7 @@ import {
 import type { ElementInfo } from '@midscene/shared/extractor';
 import {
   createImgBase64ByFormat,
-  isValidPNGImageBuffer,
+  isValidImageBuffer,
 } from '@midscene/shared/img';
 import { getDebug } from '@midscene/shared/logger';
 import { normalizeForComparison, repeat } from '@midscene/shared/utils';
@@ -61,6 +64,18 @@ const IME_STRATEGY_ALWAYS_YADB = 'always-yadb' as const;
 const IME_STRATEGY_YADB_FOR_NON_ASCII = 'yadb-for-non-ascii' as const;
 
 const debugDevice = getDebug('android:device');
+
+/**
+ * Escape text for safe use in shell single-quoted strings.
+ * In single quotes, all characters are literal except ' itself.
+ * Newlines (0x0A) are converted to literal \n for safe transport;
+ * yadb interprets \n back to a real newline.
+ */
+export function escapeForShell(text: string): string {
+  return text
+    .replace(/'/g, "'\\''") // End quote, escaped quote, start quote: ' → '\''
+    .replace(/\n/g, '\\n'); // 0x0A → literal \n (yadb interprets back to newline)
+}
 
 export class AndroidDevice implements AbstractInterface {
   private deviceId: string;
@@ -206,8 +221,24 @@ export class AndroidDevice implements AbstractInterface {
           },
         );
       }),
+      defineActionSwipe(async (param) => {
+        const { startPoint, endPoint, duration, repeatCount } =
+          normalizeMobileSwipeParam(param, await this.size());
+        for (let i = 0; i < repeatCount; i++) {
+          await this.mouseDrag(startPoint, endPoint, duration);
+        }
+      }),
       defineActionKeyboardPress(async (param) => {
         await this.keyboardPress(param.keyName);
+      }),
+      defineActionCursorMove(async (param) => {
+        const arrowKey =
+          param.direction === 'left' ? 'ArrowLeft' : 'ArrowRight';
+        const times = param.times ?? 1;
+        for (let i = 0; i < times; i++) {
+          await this.keyboardPress(arrowKey);
+          await sleep(100);
+        }
       }),
       defineAction<
         z.ZodObject<{
@@ -542,7 +573,7 @@ ${Object.keys(size)
     const adb = await this.getAdb();
 
     await adb.shell(
-      `app_process${this.getDisplayArg()} -Djava.class.path=/data/local/tmp/yadb /data/local/tmp com.ysbing.yadb.Main -keyboard "${keyboardContent}"`,
+      `app_process${this.getDisplayArg()} -Djava.class.path=/data/local/tmp/yadb /data/local/tmp com.ysbing.yadb.Main -keyboard '${keyboardContent}'`,
     );
   }
 
@@ -835,26 +866,8 @@ ${Object.keys(size)
   async size(): Promise<Size> {
     const deviceInfo = await this.getDevicePhysicalInfo();
 
-    // If scrcpy is enabled and connected, return its actual resolution
-    // This ensures size() matches the screenshot resolution exactly, avoiding Agent-layer resize
-    const adapter = this.getScrcpyAdapter();
-    if (adapter.isEnabled()) {
-      const scrcpySize = adapter.getSize(deviceInfo);
-      if (scrcpySize) {
-        const isLandscape =
-          deviceInfo.orientation === 1 || deviceInfo.orientation === 3;
-        const shouldSwap =
-          deviceInfo.isCurrentOrientation !== true && isLandscape;
-        const physicalWidth = shouldSwap
-          ? deviceInfo.physicalHeight
-          : deviceInfo.physicalWidth;
-        this.scalingRatio =
-          adapter.getScalingRatio(physicalWidth) ?? this.scalingRatio;
-        return scrcpySize;
-      }
-    }
-
-    // Standard path: calculate logical size from physical size and DPR/screenshotResizeScale
+    // Always use standard path: calculate logical size from physical size and DPR/screenshotResizeScale
+    // Both ADB and scrcpy screenshots go through Agent-layer Sharp resize for consistent quality
     const isLandscape =
       deviceInfo.orientation === 1 || deviceInfo.orientation === 3;
     const shouldSwap = deviceInfo.isCurrentOrientation !== true && isLandscape;
@@ -999,7 +1012,7 @@ ${Object.keys(size)
         }
 
         // check if the buffer is a valid PNG image, it might be a error string
-        if (!isValidPNGImageBuffer(screenshotBuffer)) {
+        if (!isValidImageBuffer(screenshotBuffer)) {
           debugDevice(
             'Invalid image buffer detected: not a valid image format',
           );
@@ -1071,7 +1084,7 @@ ${Object.keys(size)
           );
         }
 
-        if (!isValidPNGImageBuffer(screenshotBuffer)) {
+        if (!isValidImageBuffer(screenshotBuffer)) {
           throw new Error('Fallback screenshot buffer has invalid PNG format');
         }
 
@@ -1350,23 +1363,40 @@ ${Object.keys(size)
   }
 
   /**
-   * Check if text contains characters that may cause issues with ADB inputText
-   * This includes:
-   * - Non-ASCII characters (Unicode characters like ö, é, ñ, Chinese, Japanese, etc.)
-   * - Format specifiers that may be interpreted by shell (%, $)
-   * - Special shell characters that need escaping
+   * Check if text contains characters that may cause issues with ADB inputText.
+   * appium-adb's inputText has known bugs with certain characters:
+   * - Backslash causes broken shell quoting
+   * - Backtick is not escaped at all
+   * - Text containing both " and ' throws an error
+   * - Dollar sign can cause variable expansion issues
+   *
+   * For these characters, we route through yadb which handles them correctly
+   * via escapeForShell + double-quoted shell context.
    */
   private shouldUseYadbForText(text: string): boolean {
     // Check for any non-ASCII characters (code point >= 128)
     // This covers Latin Unicode characters (ö, é, ñ), Chinese, Japanese, etc.
-    // Using positive match to avoid control character in regex
     const hasNonAscii = /[\x80-\uFFFF]/.test(text);
 
     // Check for format specifiers that may cause issues in shell
     // % can be interpreted as format specifier in some contexts
     const hasFormatSpecifiers = /%[a-zA-Z]/.test(text);
 
-    return hasNonAscii || hasFormatSpecifiers;
+    // Check for shell-special characters that appium-adb's inputText cannot handle correctly:
+    // \ (backslash) - causes broken quoting in inputText
+    // ` (backtick) - not escaped by inputText, causes command substitution
+    // $ (dollar) - can cause variable expansion issues with double escaping
+    const hasShellSpecialChars = /[\\`$]/.test(text);
+
+    // appium-adb throws if text contains both " and '
+    const hasBothQuotes = text.includes('"') && text.includes("'");
+
+    return (
+      hasNonAscii ||
+      hasFormatSpecifiers ||
+      hasShellSpecialChars ||
+      hasBothQuotes
+    );
   }
 
   async keyboardType(
@@ -1375,7 +1405,6 @@ ${Object.keys(size)
   ): Promise<void> {
     if (!text) return;
     const adb = await this.getAdb();
-    const shouldUseYadb = this.shouldUseYadbForText(text);
     const IME_STRATEGY =
       (this.options?.imeStrategy ||
         globalConfigManager.getEnvConfigValue(MIDSCENE_ANDROID_IME_STRATEGY)) ??
@@ -1383,14 +1412,28 @@ ${Object.keys(size)
     const shouldAutoDismissKeyboard =
       options?.autoDismissKeyboard ?? this.options?.autoDismissKeyboard ?? true;
 
-    if (
+    // Decide input path for the entire text, not per-segment.
+    const useYadb =
       IME_STRATEGY === IME_STRATEGY_ALWAYS_YADB ||
-      (IME_STRATEGY === IME_STRATEGY_YADB_FOR_NON_ASCII && shouldUseYadb)
-    ) {
-      await this.execYadb(text);
+      (IME_STRATEGY === IME_STRATEGY_YADB_FOR_NON_ASCII &&
+        this.shouldUseYadbForText(text));
+
+    if (useYadb) {
+      // yadb handles newlines natively: escapeForShell converts \n (0x0A)
+      // to literal \n (two chars), which yadb interprets back as newline.
+      // Single adb call for the entire text.
+      await this.execYadb(escapeForShell(text));
     } else {
-      // for pure ASCII characters, directly use inputText
-      await adb.inputText(text);
+      // inputText cannot handle newlines, so split by \n and press Enter between segments.
+      const segments = text.split('\n');
+      for (let i = 0; i < segments.length; i++) {
+        if (segments[i].length > 0) {
+          await adb.inputText(segments[i]);
+        }
+        if (i < segments.length - 1) {
+          await adb.keyevent(66);
+        }
+      }
     }
 
     if (shouldAutoDismissKeyboard === true) {
@@ -1525,11 +1568,17 @@ ${Object.keys(size)
     const startX = Math.round(deltaX < 0 ? (n - 1) * (width / n) : width / n);
     const startY = Math.round(deltaY < 0 ? (n - 1) * (height / n) : height / n);
 
-    // Calculate the maximum swipeable range
-    const maxNegativeDeltaX = startX;
-    const maxPositiveDeltaX = Math.round((n - 1) * (width / n));
-    const maxNegativeDeltaY = startY;
-    const maxPositiveDeltaY = Math.round((n - 1) * (height / n));
+    // Calculate the maximum swipeable range so end coordinates stay in bounds.
+    // endX = startX - deltaX, endY = startY - deltaY
+    // Therefore:
+    //  - deltaX > 0 means moving left: max distance is startX
+    //  - deltaX < 0 means moving right: max distance is width - startX
+    //  - deltaY > 0 means moving up: max distance is startY
+    //  - deltaY < 0 means moving down: max distance is height - startY
+    const maxPositiveDeltaX = startX;
+    const maxNegativeDeltaX = width - startX;
+    const maxPositiveDeltaY = startY;
+    const maxNegativeDeltaY = height - startY;
 
     // Limit the swipe distance
     deltaX = Math.max(-maxNegativeDeltaX, Math.min(deltaX, maxPositiveDeltaX));

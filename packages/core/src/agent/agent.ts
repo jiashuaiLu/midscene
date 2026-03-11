@@ -1,3 +1,9 @@
+import type { TUserPrompt } from '../ai-model/index';
+import { ScreenshotItem } from '../screenshot-item';
+import Service from '../service/index';
+// Import types and values directly from their source files to avoid circular dependency
+// DO NOT import from '../index' as it creates a circular dependency:
+// index.ts -> agent/index.ts -> agent/agent.ts -> index.ts
 import {
   type ActionParam,
   type ActionReturn,
@@ -7,31 +13,26 @@ import {
   type AgentWaitForOpt,
   type CacheConfig,
   type DeepThinkOption,
-  type DetailedLocateParam,
   type DeviceAction,
   ExecutionDump,
   type ExecutionRecorderItem,
   type ExecutionTask,
   type ExecutionTaskLog,
-  type ExecutionTaskPlanning,
   GroupedActionDump,
   type LocateOption,
   type LocateResultElement,
   type LocateValidatorResult,
   type LocatorValidatorOption,
-  type MidsceneYamlScript,
   type OnTaskStartTip,
   type PlanningAction,
   type Rect,
-  ScreenshotItem,
   type ScrollParam,
-  Service,
   type ServiceAction,
   type ServiceExtractOption,
   type ServiceExtractParam,
-  type TUserPrompt,
   type UIContext,
-} from '../index';
+} from '../types';
+import type { MidsceneYamlScript } from '../yaml';
 export type TestStatus =
   | 'passed'
   | 'failed'
@@ -41,13 +42,9 @@ export type TestStatus =
 import { isAutoGLM, isUITars } from '@/ai-model/auto-glm/util';
 import yaml from 'js-yaml';
 
-import {
-  getVersion,
-  groupedActionDumpFileExt,
-  processCacheConfig,
-  reportHTMLContent,
-  writeLogFile,
-} from '@/utils';
+import type { IReportGenerator } from '@/report-generator';
+import { ReportGenerator } from '@/report-generator';
+import { getVersion, processCacheConfig, reportHTMLContent } from '@/utils';
 import {
   ScriptPlayer,
   buildDetailedLocateParam,
@@ -67,7 +64,7 @@ import {
 } from '@midscene/shared/env';
 import { imageInfoOfBase64, resizeImgBase64 } from '@midscene/shared/img';
 import { getDebug } from '@midscene/shared/logger';
-import { assert } from '@midscene/shared/utils';
+import { assert, ifInBrowser, uuid } from '@midscene/shared/utils';
 import { defineActionSleep } from '../device';
 import { TaskCache } from './task-cache';
 import {
@@ -77,12 +74,7 @@ import {
   withFileChooser,
 } from './tasks';
 import { locateParamStr, paramStr, taskTitleStr, typeStr } from './ui-utils';
-import {
-  commonContextParser,
-  getReportFileName,
-  parsePrompt,
-  printReportMsg,
-} from './utils';
+import { commonContextParser, getReportFileName, parsePrompt } from './utils';
 
 const debug = getDebug('agent');
 
@@ -150,6 +142,7 @@ export type AiActOptions = {
   cacheable?: boolean;
   fileChooserAccept?: string | string[];
   deepThink?: DeepThinkOption;
+  deepLocate?: boolean;
 };
 
 export class Agent<
@@ -230,6 +223,8 @@ export class Agent<
   private executionDumpIndexByRunner = new WeakMap<TaskRunner, number>();
 
   private fullActionSpace: DeviceAction[];
+
+  private reportGenerator: IReportGenerator;
 
   // @deprecated use .interface instead
   get page() {
@@ -405,6 +400,7 @@ export class Agent<
             }
           }
 
+          // Fire and forget - don't block task execution
           this.writeOutActionDumps();
         },
       },
@@ -413,6 +409,12 @@ export class Agent<
     this.reportFileName =
       opts?.reportFileName ||
       getReportFileName(opts?.testId || this.interface.interfaceType || 'web');
+
+    this.reportGenerator = ReportGenerator.create(this.reportFileName!, {
+      generateReport: this.opts.generateReport,
+      outputFormat: this.opts.outputFormat,
+      autoPrintReportMsg: this.opts.autoPrintReportMsg,
+    });
   }
 
   async getActionSpace(): Promise<DeviceAction[]> {
@@ -518,35 +520,25 @@ export class Agent<
     currentDump.executions.push(execution);
   }
 
-  dumpDataString() {
+  dumpDataString(opt?: { inlineScreenshots?: boolean }) {
     // update dump info
     this.dump.groupName = this.opts.groupName!;
     this.dump.groupDescription = this.opts.groupDescription;
+    // In browser environment, use inline screenshots since file system is not available
+    if (ifInBrowser || opt?.inlineScreenshots) {
+      return this.dump.serializeWithInlineScreenshots();
+    }
     return this.dump.serialize();
   }
 
-  reportHTMLString() {
-    return reportHTMLContent(this.dumpDataString());
+  reportHTMLString(opt?: { inlineScreenshots?: boolean }) {
+    // dumpDataString() handles browser environment with inline screenshots
+    return reportHTMLContent(this.dumpDataString(opt));
   }
 
   writeOutActionDumps() {
-    if (this.destroyed) {
-      throw new Error(
-        'PageAgent has been destroyed. Cannot update report file.',
-      );
-    }
-    const { generateReport, autoPrintReportMsg } = this.opts;
-    this.reportFile = writeLogFile({
-      fileName: this.reportFileName!,
-      fileExt: groupedActionDumpFileExt,
-      fileContent: this.dumpDataString(),
-      type: 'dump',
-      generateReport,
-    });
-    debug('writeOutActionDumps', this.reportFile);
-    if (generateReport && autoPrintReportMsg && this.reportFile) {
-      printReportMsg(this.reportFile);
-    }
+    this.reportGenerator.onDumpUpdate(this.dump);
+    this.reportFile = this.reportGenerator.getReportPath();
   }
 
   private async callbackOnTaskStartTip(task: ExecutionTask) {
@@ -727,10 +719,14 @@ export class Agent<
     // Convert value to string to ensure consistency
     const stringValue = typeof value === 'number' ? String(value) : value;
 
+    // backward compat: convert deprecated 'append' to 'typeOnly'
+    const mode = opt?.mode === 'append' ? 'typeOnly' : opt?.mode;
+
     return this.callActionInActionSpace('Input', {
       ...(opt || {}),
       value: stringValue,
       locate: detailedLocateParam,
+      mode,
     });
   }
 
@@ -892,6 +888,13 @@ export class Agent<
           defaultIntentModelConfig.openaiBaseURL;
       debug('setting includeBboxInPlanning to', includeBboxInPlanning);
 
+      const deepLocate = opt?.deepLocate;
+      if (deepLocate && includeBboxInPlanning) {
+        console.warn(
+          'deepLocate option is ignored when includeBboxInPlanning is true (same model for planning and default intent without deepThink). Locate is already done during planning.',
+        );
+      }
+
       const cacheable = opt?.cacheable;
       const replanningCycleLimit = this.resolveReplanningCycleLimit(
         modelConfigForPlanning,
@@ -921,7 +924,7 @@ export class Agent<
       }
 
       // If cache matched but yamlWorkflow is empty, fall through to normal execution
-      const imagesIncludeCount: number | undefined = deepThink ? undefined : 2;
+      const imagesIncludeCount: number = deepThink ? 2 : 1;
       const { output: actionOutput } = await this.taskExecutor.action(
         taskPrompt,
         modelConfigForPlanning,
@@ -933,6 +936,7 @@ export class Agent<
         imagesIncludeCount,
         deepThink,
         fileChooserAccept,
+        includeBboxInPlanning ? undefined : deepLocate,
       );
 
       // update cache
@@ -1334,6 +1338,12 @@ export class Agent<
       return;
     }
 
+    // Wait for all queued write operations to complete
+    await this.reportGenerator.flush();
+
+    await this.reportGenerator.finalize(this.dump);
+    this.reportFile = this.reportGenerator.getReportPath();
+
     await this.interface.destroy?.();
     this.resetDump(); // reset dump to release memory
     this.destroyed = true;
@@ -1359,6 +1369,7 @@ export class Agent<
     ];
     // 3. build ExecutionTaskLog
     const task: ExecutionTaskLog = {
+      taskId: uuid(),
       type: 'Log',
       subType: 'Screenshot',
       status: 'finished',
@@ -1394,6 +1405,7 @@ export class Agent<
     }
 
     this.writeOutActionDumps();
+    await this.reportGenerator.flush();
   }
 
   /**
@@ -1517,6 +1529,10 @@ export class Agent<
   }
 
   private normalizeFilePaths(files: string[]): string[] {
+    if (ifInBrowser) {
+      throw new Error('File chooser is not supported in browser environment');
+    }
+
     return files.map((file) => {
       const absolutePath = resolve(file);
       if (!existsSync(absolutePath)) {

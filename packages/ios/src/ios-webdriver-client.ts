@@ -3,6 +3,11 @@ import { WebDriverClient } from '@midscene/webdriver';
 
 const debugIOS = getDebug('webdriver:ios');
 
+// WDA MJPEG server settings applied during session setup
+const WDA_MJPEG_SCREENSHOT_QUALITY = 50;
+const WDA_MJPEG_FRAMERATE = 30;
+const WDA_MJPEG_SCALING_FACTOR = 50;
+
 export class IOSWebDriverClient extends WebDriverClient {
   async launchApp(bundleId: string): Promise<void> {
     this.ensureSession();
@@ -450,11 +455,10 @@ export class IOSWebDriverClient extends WebDriverClient {
         this.getWindowSize(),
       ]);
 
-      // Get screenshot dimensions from base64 using Jimp
-      const { jimpFromBase64 } = await import('@midscene/shared/img');
-      const screenshotImg = await jimpFromBase64(screenshotBase64);
-      const screenshotWidth = screenshotImg.bitmap.width;
-      const screenshotHeight = screenshotImg.bitmap.height;
+      // Get screenshot dimensions from base64
+      const { imageInfoOfBase64 } = await import('@midscene/shared/img');
+      const { width: screenshotWidth, height: screenshotHeight } =
+        await imageInfoOfBase64(screenshotBase64);
 
       // Calculate scale: max(screenshot.size) / max(window.size)
       const scale =
@@ -498,7 +502,7 @@ export class IOSWebDriverClient extends WebDriverClient {
     if (!this.sessionId) return;
 
     try {
-      // Set iOS-specific session configuration
+      // Set iOS-specific session configuration + MJPEG server settings
       await this.makeRequest(
         'POST',
         `/session/${this.sessionId}/appium/settings`,
@@ -506,9 +510,12 @@ export class IOSWebDriverClient extends WebDriverClient {
           snapshotMaxDepth: 50,
           elementResponseAttributes:
             'type,label,name,value,rect,enabled,visible',
+          mjpegServerScreenshotQuality: WDA_MJPEG_SCREENSHOT_QUALITY,
+          mjpegServerFramerate: WDA_MJPEG_FRAMERATE,
+          mjpegScalingFactor: WDA_MJPEG_SCALING_FACTOR,
         },
       );
-      debugIOS('iOS session configuration applied');
+      debugIOS('iOS session configuration applied (including MJPEG settings)');
     } catch (error) {
       debugIOS(`Failed to apply iOS session configuration: ${error}`);
       // Don't throw, this is optional configuration
@@ -528,7 +535,6 @@ export class IOSWebDriverClient extends WebDriverClient {
     endpoint: string,
     data?: any,
   ): Promise<TResult> {
-    this.ensureSession();
-    return this.makeRequest(method, endpoint, data);
+    return this.makeRequest(method, this.buildSessionEndpoint(endpoint), data);
   }
 }

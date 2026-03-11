@@ -9,12 +9,13 @@ import {
   DownloadOutlined,
   ExportOutlined,
   LoadingOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { BaseElement, LocateResultElement, Rect } from '@midscene/core';
 import { Dropdown, Spin, Switch, Tooltip, message } from 'antd';
 import GlobalPerspectiveIcon from '../../icons/global-perspective.svg';
 import PlayerSettingIcon from '../../icons/player-setting.svg';
-import { useGlobalPreference } from '../../store/store';
+import { type PlaybackSpeedType, useGlobalPreference } from '../../store/store';
 import { getTextureFromCache, loadTexture } from '../../utils/pixi-loader';
 import type {
   AnimationScript,
@@ -59,10 +60,6 @@ const linear = (t: number): number => {
   return t;
 };
 
-const sleep = (ms: number): Promise<void> => {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-};
-
 type FrameFn = (callback: (current: number) => void) => void;
 
 const ERROR_FRAME_CANCEL = 'frame cancel (this is an error on purpose)';
@@ -70,8 +67,11 @@ const frameKit = (): {
   frame: FrameFn;
   cancel: () => void;
   timeout: (callback: () => void, ms: number) => void;
+  sleep: (ms: number) => Promise<void>;
+  isCancelled: () => boolean;
 } => {
   let cancelFlag = false;
+  const pendingTimeouts: number[] = [];
 
   return {
     frame: (callback: (current: number) => void) => {
@@ -90,17 +90,38 @@ const frameKit = (): {
       if (cancelFlag) {
         throw new Error(ERROR_FRAME_CANCEL);
       }
-      setTimeout(() => {
+      const timeoutId = window.setTimeout(() => {
         if (cancelFlag) {
           // Don't throw in setTimeout callback - just return silently
           return;
         }
         callback();
       }, ms);
+      pendingTimeouts.push(timeoutId);
     },
+    sleep: (ms: number): Promise<void> => {
+      if (cancelFlag) {
+        return Promise.reject(new Error(ERROR_FRAME_CANCEL));
+      }
+      return new Promise((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+          if (cancelFlag) {
+            reject(new Error(ERROR_FRAME_CANCEL));
+          } else {
+            resolve();
+          }
+        }, ms);
+        pendingTimeouts.push(timeoutId);
+      });
+    },
+    isCancelled: () => cancelFlag,
     cancel: () => {
-      // console.log('set frame cancel (this is an error on purpose)');
       cancelFlag = true;
+      // Clear all pending timeouts to stop animations immediately
+      for (const id of pendingTimeouts) {
+        clearTimeout(id);
+      }
+      pendingTimeouts.length = 0;
     },
   };
 };
@@ -203,10 +224,12 @@ export function Player(props?: {
   fitMode?: 'width' | 'height'; // 'width': width adaptive, 'height': height adaptive, default to 'height'
   autoZoom?: boolean; // enable auto zoom when playing, default to true
   canDownloadReport?: boolean; // enable download report, default to true
+  onTaskChange?: (taskId: string | null) => void; // callback when task changes during playback
 }) {
   const [titleText, setTitleText] = useState('');
   const [subTitleText, setSubTitleText] = useState('');
-  const { autoZoom, setAutoZoom } = useGlobalPreference();
+  const { autoZoom, setAutoZoom, playbackSpeed, setPlaybackSpeed } =
+    useGlobalPreference();
 
   // Update state when prop changes
   useEffect(() => {
@@ -759,6 +782,8 @@ export function Player(props?: {
   const [isRecording, setIsRecording] = useState(false);
   const recorderSessionRef = useRef<RecordingSession | null>(null);
   const cancelAnimationRef = useRef<(() => void) | null>(null);
+  // Playback session ID to prevent stale callbacks from cancelled playbacks
+  const playbackSessionIdRef = useRef(0);
 
   const handleExport = async () => {
     if (recorderSessionRef.current) {
@@ -786,6 +811,14 @@ export function Player(props?: {
 
   const play = (): (() => void) => {
     let cancelFn: () => void;
+    // Increment session ID to invalidate callbacks from previous playback
+    const currentSessionId = ++playbackSessionIdRef.current;
+    // Helper to safely call onTaskChange only if this session is still active
+    const safeOnTaskChange = (taskId: string | null) => {
+      if (playbackSessionIdRef.current === currentSessionId) {
+        props?.onTaskChange?.(taskId);
+      }
+    };
     Promise.resolve(
       (async () => {
         if (!app || !appInitialized.current) {
@@ -794,7 +827,13 @@ export function Player(props?: {
         if (!scripts) {
           throw new Error('scripts is required');
         }
-        const { frame, cancel, timeout } = frameKit();
+        const { frame, cancel, timeout, sleep: baseSleep } = frameKit();
+
+        // Scale duration by playback speed (faster playback = shorter duration)
+        const scaleByPlaybackSpeed = (duration: number) =>
+          duration / playbackSpeed;
+        // Wrap sleep to apply playback speed
+        const sleep = (ms: number) => baseSleep(scaleByPlaybackSpeed(ms));
         cancelFn = cancel;
         cancelAnimationRef.current = cancel;
         const allImages: string[] = scripts
@@ -811,15 +850,17 @@ export function Player(props?: {
         await updatePointer(mousePointer, imageWidth / 2, imageHeight / 2);
         await repaintImage();
         await updateCamera({ ...basicCameraState });
-        const totalDuration = scripts.reduce((acc, item) => {
-          return (
-            acc +
-            item.duration +
-            (item.camera && item.insightCameraDuration
-              ? item.insightCameraDuration
-              : 0)
-          );
-        }, 0);
+        const totalDuration = scaleByPlaybackSpeed(
+          scripts.reduce((acc, item) => {
+            return (
+              acc +
+              item.duration +
+              (item.camera && item.insightCameraDuration
+                ? item.insightCameraDuration
+                : 0)
+            );
+          }, 0),
+        );
         // progress bar
         const progressUpdateInterval = 200;
         const startTime = performance.now();
@@ -839,11 +880,29 @@ export function Player(props?: {
           recorderSessionRef.current.start();
         }
 
+        // Track current taskId for callback
+        let currentTaskId: string | null = null;
+
+        // Immediately notify the first task's taskId before starting the loop
+        // This ensures the sidebar highlights the first step right when playback starts
+        const firstTaskId = scripts[0]?.taskId ?? null;
+        if (firstTaskId) {
+          currentTaskId = firstTaskId;
+          safeOnTaskChange(currentTaskId);
+        }
+
         // play animation
         for (const index in scripts) {
           const item = scripts[index];
           setTitleText(item.title || '');
           setSubTitleText(item.subTitle || '');
+
+          // Notify task change if taskId changed
+          const newTaskId = item.taskId ?? null;
+          if (newTaskId !== currentTaskId) {
+            currentTaskId = newTaskId;
+            safeOnTaskChange(currentTaskId);
+          }
 
           if (item.type === 'sleep') {
             await sleep(item.duration);
@@ -860,7 +919,7 @@ export function Player(props?: {
               [],
               highlightElements,
               item.searchArea,
-              item.duration,
+              scaleByPlaybackSpeed(item.duration),
               frame,
             );
             if (item.camera) {
@@ -869,12 +928,16 @@ export function Player(props?: {
               }
               await cameraAnimation(
                 item.camera,
-                item.insightCameraDuration,
+                scaleByPlaybackSpeed(item.insightCameraDuration),
                 frame,
               );
             }
           } else if (item.type === 'clear-insight') {
-            await fadeOutItem(insightMarkContainer, item.duration, frame);
+            await fadeOutItem(
+              insightMarkContainer,
+              scaleByPlaybackSpeed(item.duration),
+              frame,
+            );
             insightMarkContainer.removeChildren();
             insightMarkContainer.alpha = 1;
           } else if (item.type === 'img') {
@@ -883,7 +946,11 @@ export function Player(props?: {
               await repaintImage(item.imageWidth, item.imageHeight);
             }
             if (item.camera) {
-              await cameraAnimation(item.camera, item.duration, frame);
+              await cameraAnimation(
+                item.camera,
+                scaleByPlaybackSpeed(item.duration),
+                frame,
+              );
             } else {
               await sleep(item.duration);
             }
@@ -899,6 +966,9 @@ export function Player(props?: {
           }
         }
 
+        // Clear taskId when playback ends
+        safeOnTaskChange(null);
+
         if (recorderSessionRef.current) {
           // Add delay to capture final frames before stopping the recorder
           await sleep(1200);
@@ -912,6 +982,8 @@ export function Player(props?: {
         // Ignore frame cancel errors (these are expected when animation is cancelled)
         if (e?.message === ERROR_FRAME_CANCEL) {
           console.log('Animation cancelled (expected behavior)');
+          // Clear taskId when cancelled (only if this session is still active)
+          safeOnTaskChange(null);
           return;
         }
 
@@ -926,6 +998,8 @@ export function Player(props?: {
           recorderSessionRef.current = null;
         }
         setIsRecording(false);
+        // Clear taskId on error (only if this session is still active)
+        safeOnTaskChange(null);
 
         // Only show error message if we were actually recording
         if (wasRecording) {
@@ -1013,16 +1087,12 @@ export function Player(props?: {
     statusIconElement = (
       <Spin indicator={<LoadingOutlined spin color="#333" />} size="default" />
     );
-  } else if (mouseOverStatusIcon) {
+  } else {
+    // Finished - show replay button
     statusIconElement = (
       <Spin indicator={<CaretRightOutlined color="#333" />} size="default" />
     );
     statusOnClick = () => triggerReplay();
-  } else {
-    statusIconElement = (
-      // <Spin indicator={<CheckCircleOutlined />} size="default" />
-      <Spin indicator={<CaretRightOutlined color="#333" />} size="default" />
-    );
   }
 
   return (
@@ -1093,72 +1163,80 @@ export function Player(props?: {
               overlayStyle={{
                 minWidth: '148px',
               }}
-              dropdownRender={(menu) => (
-                <div
-                  style={{
-                    borderRadius: '8px',
-                    border: '1px solid rgba(0, 0, 0, 0.08)',
-                    backgroundColor: '#fff',
-                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-                    overflow: 'hidden',
-                  }}
-                >
-                  {menu}
+              dropdownRender={() => (
+                <div className="player-settings-dropdown">
+                  <div
+                    className="player-settings-item"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      height: '32px',
+                      padding: '0 8px',
+                      borderRadius: '4px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <GlobalPerspectiveIcon
+                        style={{ width: '16px', height: '16px' }}
+                      />
+                      <span style={{ fontSize: '12px', marginRight: '16px' }}>
+                        Focus on cursor
+                      </span>
+                    </div>
+                    <Switch
+                      size="small"
+                      checked={autoZoom}
+                      onChange={(checked) => {
+                        setAutoZoom(checked);
+                        triggerReplay();
+                      }}
+                    />
+                  </div>
+                  <div className="player-settings-divider" />
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      height: '32px',
+                      padding: '0 8px',
+                    }}
+                  >
+                    <ThunderboltOutlined
+                      style={{ width: '16px', height: '16px' }}
+                    />
+                    <span style={{ fontSize: '12px' }}>Playback speed</span>
+                  </div>
+                  {([0.5, 1, 1.5, 2] as PlaybackSpeedType[]).map((speed) => (
+                    <div
+                      key={speed}
+                      onClick={() => {
+                        setPlaybackSpeed(speed);
+                        triggerReplay();
+                      }}
+                      style={{
+                        height: '32px',
+                        lineHeight: '32px',
+                        padding: '0 8px 0 24px',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        borderRadius: '4px',
+                      }}
+                      className={`player-speed-option${playbackSpeed === speed ? ' active' : ''}`}
+                    >
+                      {speed}x
+                    </div>
+                  ))}
                 </div>
               )}
-              menu={{
-                style: {
-                  borderRadius: '8px',
-                  padding: 0,
-                },
-                items: [
-                  {
-                    key: 'autoZoom',
-                    style: {
-                      height: '39px',
-                      margin: 0,
-                      padding: '0 12px',
-                    },
-                    label: (
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          width: '100%',
-                          height: '39px',
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                          }}
-                        >
-                          <GlobalPerspectiveIcon
-                            style={{ width: '16px', height: '16px' }}
-                          />
-                          <span
-                            style={{ fontSize: '12px', marginRight: '16px' }}
-                          >
-                            Focus on cursor
-                          </span>
-                        </div>
-                        <Switch
-                          size="small"
-                          checked={autoZoom}
-                          onChange={(checked) => {
-                            setAutoZoom(checked);
-                            triggerReplay();
-                          }}
-                          onClick={(_, e) => e?.stopPropagation?.()}
-                        />
-                      </div>
-                    ),
-                  },
-                ],
-              }}
+              menu={{ items: [] }}
             >
               <div
                 className="status-icon"

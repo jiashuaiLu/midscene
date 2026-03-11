@@ -4,7 +4,11 @@ import { Alert, ConfigProvider, Empty, theme } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 
-import { GroupedActionDump } from '@midscene/core';
+import {
+  GroupedActionDump,
+  parseImageScripts,
+  restoreImageReferences,
+} from '@midscene/core';
 import { antiEscapeScriptTag } from '@midscene/shared/utils';
 import {
   Logo,
@@ -43,6 +47,7 @@ function Visualizer(props: VisualizerProps): JSX.Element {
   const insightWidth = useExecutionDump((store) => store.insightWidth);
   const insightHeight = useExecutionDump((store) => store.insightHeight);
   const replayAllMode = useExecutionDump((store) => store.replayAllMode);
+  const setPlayingTaskId = useExecutionDump((store) => store.setPlayingTaskId);
   const setGroupedDump = useExecutionDump((store) => store.setGroupedDump);
   const sdkVersion = useExecutionDump((store) => store.sdkVersion);
   const modelBriefs = useExecutionDump((store) => store.modelBriefs);
@@ -50,6 +55,7 @@ function Visualizer(props: VisualizerProps): JSX.Element {
   const [mainLayoutChangeFlag, setMainLayoutChangeFlag] = useState(0);
   const mainLayoutChangedRef = useRef(false);
   const dump = useExecutionDump((store) => store.dump);
+  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
   const {
     modelCallDetailsEnabled: proModeEnabled,
     setModelCallDetailsEnabled: setProModeEnabled,
@@ -127,6 +133,7 @@ function Visualizer(props: VisualizerProps): JSX.Element {
           replayScripts={replayAllScripts!}
           imageWidth={insightWidth!}
           imageHeight={insightHeight!}
+          onTaskChange={setPlayingTaskId}
         />
       </div>
     ) : (
@@ -177,8 +184,27 @@ function Visualizer(props: VisualizerProps): JSX.Element {
         />
         <Panel defaultSize={75} maxSize={95}>
           <div className="main-right">
-            <div className="main-right-header">Record</div>
-            <Timeline key={mainLayoutChangeFlag} />
+            <div
+              className="main-right-header"
+              onClick={() => setTimelineCollapsed(!timelineCollapsed)}
+              style={{ cursor: 'pointer', userSelect: 'none' }}
+            >
+              <span
+                className="timeline-collapse-icon"
+                style={{
+                  display: 'inline-block',
+                  marginRight: 8,
+                  transition: 'transform 0.2s',
+                  transform: timelineCollapsed
+                    ? 'rotate(-90deg)'
+                    : 'rotate(0deg)',
+                }}
+              >
+                ▼
+              </span>
+              Record
+            </div>
+            {!timelineCollapsed && <Timeline key={mainLayoutChangeFlag} />}
             <div className="main-content">{content}</div>
           </div>
         </Panel>
@@ -302,8 +328,17 @@ export function App() {
               try {
                 console.time('parse_dump');
                 const content = antiEscapeScriptTag(el.textContent || '');
-                cachedJsonContent =
-                  GroupedActionDump.fromSerializedString(content);
+
+                // Build imageMap from <script type="midscene-image"> tags
+                const imageMap = parseImageScripts(
+                  document.documentElement.innerHTML,
+                );
+
+                // Parse dump and restore image references
+                const parsed = JSON.parse(content);
+                const restored = restoreImageReferences(parsed, imageMap);
+                cachedJsonContent = GroupedActionDump.fromJSON(restored);
+
                 console.timeEnd('parse_dump');
                 (cachedJsonContent as any).attributes = attributes;
                 isParsed = true;

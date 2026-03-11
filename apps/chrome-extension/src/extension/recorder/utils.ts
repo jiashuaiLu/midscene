@@ -827,6 +827,37 @@ export const exportAllEventsToZip = async (sessions: RecordingSession[]) => {
     const aiMindmap =
       await generateDetailedSequentialMindmap(sessionsWithEvents);
 
+    // Build text case section
+    let textCaseSection = '';
+    sessionsWithEvents.forEach((session, index) => {
+      if (session.generatedCode?.textCase) {
+        try {
+          const textCase = JSON.parse(session.generatedCode.textCase);
+          textCaseSection += `\n\n## 文本用例 ${index + 1}: ${textCase.caseTitle || session.name}\n\n`;
+          textCaseSection += '```json\n';
+          textCaseSection += session.generatedCode.textCase;
+          textCaseSection += '\n```\n';
+        } catch {
+          // If parsing fails, just add the raw content
+          textCaseSection += `\n\n## 文本用例 ${index + 1}: ${session.name}\n\n`;
+          textCaseSection += '```json\n';
+          textCaseSection += session.generatedCode.textCase;
+          textCaseSection += '\n```\n';
+        }
+      }
+    });
+
+    // Build YAML section
+    let yamlSection = '';
+    sessionsWithEvents.forEach((session, index) => {
+      if (session.generatedCode?.yaml) {
+        yamlSection += `\n\n## YAML 脚本 ${index + 1}: ${session.name}\n\n`;
+        yamlSection += '```yaml\n';
+        yamlSection += session.generatedCode.yaml;
+        yamlSection += '\n```\n';
+      }
+    });
+
     // Combine mindmap and table in automation-story.md
     const combinedContent = `# Test Events Report
 
@@ -836,7 +867,7 @@ export const exportAllEventsToZip = async (sessions: RecordingSession[]) => {
 ${aiMindmap}
 \`\`\`
 
-${markdownContent.replace('# Test Events Report\n\n', '')}`;
+${markdownContent.replace('# Test Events Report\n\n', '')}${textCaseSection}${yamlSection}`;
 
     zip.file('automation-story.md', combinedContent);
 

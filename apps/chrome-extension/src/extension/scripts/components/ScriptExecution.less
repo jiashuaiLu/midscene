@@ -1,0 +1,178 @@
+.script-execution-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  background: #fafbfc;
+
+  &.loading,
+  &.error,
+  &.empty {
+    justify-content: center;
+    align-items: center;
+  }
+
+  .execution-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #eef0f2;
+
+    .ant-btn-text {
+      font-size: 13px;
+      color: #595959;
+      
+      .anticon {
+        font-size: 12px;
+      }
+    }
+
+    .script-title {
+      flex: 1;
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: #262626;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 8px;
+    }
+  }
+
+  .execution-content {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    .execution-steps {
+      .steps-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+
+        .steps-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: #333;
+        }
+
+        .steps-count {
+          font-size: 12px;
+          color: #999;
+        }
+      }
+
+      .steps-list {
+        .step-item {
+          display: flex;
+          align-items: flex-start;
+          padding: 12px 16px;
+          margin-bottom: 8px;
+          background: #fff;
+          border-radius: 8px;
+          border: 1px solid #eef0f2;
+          transition: all 0.3s ease;
+
+          &.current {
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.1);
+          }
+
+          &.success {
+            border-left: 3px solid #52c41a;
+          }
+
+          &.failed {
+            border-left: 3px solid #ff4d4f;
+            background: #fff2f0;
+          }
+
+          &.running {
+            border-left: 3px solid #1890ff;
+            background: #e6f7ff;
+          }
+
+          .step-icon {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+            flex-shrink: 0;
+
+            .step-number {
+              width: 24px;
+              height: 24px;
+              border-radius: 50%;
+              background: #f0f0f0;
+              color: #666;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-size: 12px;
+              font-weight: 600;
+            }
+          }
+
+          &.success .step-icon {
+            color: #52c41a;
+          }
+
+          &.failed .step-icon {
+            color: #ff4d4f;
+          }
+
+          &.running .step-icon {
+            color: #1890ff;
+          }
+
+          .step-content {
+            flex: 1;
+            min-width: 0;
+
+            .step-description {
+              font-size: 14px;
+              color: #262626;
+              line-height: 1.5;
+              display: flex;
+              align-items: center;
+              gap: 8px;
+
+              .ant-tag {
+                margin: 0;
+              }
+            }
+
+            .step-error {
+              margin-top: 8px;
+              padding: 8px 12px;
+              background: #fff2f0;
+              border-radius: 4px;
+              font-size: 12px;
+              color: #ff4d4f;
+              border-left: 3px solid #ff4d4f;
+            }
+          }
+        }
+      }
+    }
+
+    .execution-result {
+      margin-top: auto;
+      padding: 16px;
+      background: #fff;
+      border-radius: 8px;
+    }
+  }
+}

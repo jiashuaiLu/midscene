@@ -2,6 +2,7 @@
 import {
   ApiOutlined,
   MenuOutlined,
+  PlayCircleOutlined,
   SendOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
@@ -15,8 +16,9 @@ import { useEffect, useState } from 'react';
 import { BrowserExtensionPlayground } from '../../components/playground';
 import Bridge from '../bridge';
 import Recorder from '../recorder';
+import Scripts from '../scripts';
 import './index.less';
-import { OPENAI_API_KEY } from '@midscene/shared/env';
+import { MIDSCENE_MODEL_API_KEY } from '@midscene/shared/env';
 import { safeOverrideAIConfig } from '@midscene/visualizer';
 import {
   ChromeExtensionProxyPage,
@@ -33,10 +35,10 @@ const STORAGE_KEY = 'midscene-popup-mode';
 export function PlaygroundPopup() {
   const { setPopupTab } = useEnvConfig();
   const [currentMode, setCurrentMode] = useState<
-    'playground' | 'bridge' | 'recorder'
+    'playground' | 'bridge' | 'recorder' | 'scripts'
   >(() => {
     const savedMode = localStorage.getItem(STORAGE_KEY);
-    return (savedMode as 'playground' | 'bridge' | 'recorder') || 'playground';
+    return (savedMode as 'playground' | 'bridge' | 'recorder' | 'scripts') || 'playground';
   });
 
   const { config } = useEnvConfig();
@@ -48,11 +50,25 @@ export function PlaygroundPopup() {
 
   // Override AI configuration
   useEffect(() => {
-    console.log('Chrome Extension - Overriding AI config:', config);
-    console.log('OPENAI_API_KEY exists:', !!OPENAI_API_KEY);
-
+    console.log('[Midscene Extension] === AI Config Override ===');
+    console.log('[Midscene Extension] Config object:', config);
+    console.log('[Midscene Extension] Config keys:', config ? Object.keys(config) : []);
+    console.log('[Midscene Extension] MIDSCENE_MODEL_API_KEY exists:', !!MIDSCENE_MODEL_API_KEY);
+    
     if (config && Object.keys(config).length >= 1) {
+      console.log('[Midscene Extension] Applying config override...');
+      console.log('[Midscene Extension] Model config details:', {
+        MIDSCENE_MODEL_NAME: config.MIDSCENE_MODEL_NAME,
+        MIDSCENE_MODEL_BASE_URL: config.MIDSCENE_MODEL_BASE_URL,
+        MIDSCENE_MODEL_FAMILY: config.MIDSCENE_MODEL_FAMILY,
+        MIDSCENE_PLANNING_MODEL_NAME: config.MIDSCENE_PLANNING_MODEL_NAME,
+        MIDSCENE_PLANNING_MODEL_BASE_URL: config.MIDSCENE_PLANNING_MODEL_BASE_URL,
+        MIDSCENE_PLANNING_MODEL_FAMILY: config.MIDSCENE_PLANNING_MODEL_FAMILY,
+      });
       safeOverrideAIConfig(config);
+      console.log('[Midscene Extension] Config override applied successfully');
+    } else {
+      console.warn('[Midscene Extension] No config to override or config is empty');
     }
   }, [config]);
 
@@ -65,6 +81,16 @@ export function PlaygroundPopup() {
         setCurrentMode('playground');
         setPopupTab('playground');
         localStorage.setItem(STORAGE_KEY, 'playground');
+      },
+    },
+    {
+      key: 'scripts',
+      icon: <PlayCircleOutlined />,
+      label: 'Scripts',
+      onClick: () => {
+        setCurrentMode('scripts');
+        setPopupTab('scripts');
+        localStorage.setItem(STORAGE_KEY, 'scripts');
       },
     },
     {
@@ -106,11 +132,19 @@ export function PlaygroundPopup() {
         </div>
       );
     }
+    if (currentMode === 'scripts') {
+      return (
+        <div className="popup-content scripts-mode">
+          <Scripts />
+        </div>
+      );
+    }
 
     // Check if configuration is ready
     const configReady = config && Object.keys(config).length >= 1;
-    console.log('Playground mode - config:', {
-      config,
+    console.log('[Midscene Extension] Playground mode - config check:', {
+      hasConfig: !!config,
+      configKeys: config ? Object.keys(config) : [],
       configReady,
     });
 
@@ -120,17 +154,31 @@ export function PlaygroundPopup() {
         <div className="playground-component">
           <BrowserExtensionPlayground
             getAgent={(forceSameTabNavigation?: boolean) => {
-              console.log(
-                'getAgent called with forceSameTabNavigation:',
-                forceSameTabNavigation,
-              );
-              return extensionAgentForTab(forceSameTabNavigation);
+              console.log('[Midscene Extension] Creating agent with forceSameTabNavigation:', forceSameTabNavigation);
+              const agent = extensionAgentForTab(forceSameTabNavigation);
+              console.log('[Midscene Extension] Agent created successfully');
+              return agent;
             }}
             showContextPreview={false}
           />
         </div>
       </div>
     );
+  };
+
+  const getModeTitle = () => {
+    switch (currentMode) {
+      case 'playground':
+        return 'Playground';
+      case 'recorder':
+        return 'Recorder';
+      case 'scripts':
+        return 'Scripts';
+      case 'bridge':
+        return 'Bridge Mode';
+      default:
+        return 'Playground';
+    }
   };
 
   return (
@@ -147,13 +195,7 @@ export function PlaygroundPopup() {
             >
               <MenuOutlined className="nav-icon menu-trigger" />
             </Dropdown>
-            <span className="nav-title">
-              {currentMode === 'playground'
-                ? 'Playground'
-                : currentMode === 'recorder'
-                  ? 'Recorder'
-                  : 'Bridge Mode'}
-            </span>
+            <span className="nav-title">{getModeTitle()}</span>
           </div>
           <div className="nav-right">
             <NavActions

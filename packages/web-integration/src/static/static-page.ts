@@ -8,6 +8,7 @@ import {
   defineActionKeyboardPress,
   defineActionRightClick,
   defineActionScroll,
+  defineActionSwipe,
   defineActionTap,
 } from '@midscene/core/device';
 import { ERROR_CODE_NOT_IMPLEMENTED_AS_DESIGNED } from '@midscene/shared/common';
@@ -57,6 +58,9 @@ export default class StaticPage implements AbstractInterface {
       defineActionDragAndDrop(async (param) => {
         ThrowNotImplemented('DragAndDrop');
       }),
+      defineActionSwipe(async (param) => {
+        ThrowNotImplemented('Swipe');
+      }),
     ];
   }
 
@@ -91,12 +95,16 @@ export default class StaticPage implements AbstractInterface {
   async screenshotBase64() {
     // Check if this is a UIContext with screenshot property
     if ('screenshot' in this.uiContext && this.uiContext.screenshot) {
-      return this.uiContext.screenshot.base64;
+      const screenshot = this.uiContext.screenshot;
+      if (typeof screenshot === 'object' && 'base64' in screenshot) {
+        return (screenshot as { base64: string }).base64;
+      }
+      return screenshot as unknown as string;
     }
 
     // Check legacy screenshotBase64 field
     const legacyContext = this.uiContext as { screenshotBase64?: string };
-    let base64 = legacyContext.screenshotBase64;
+    const base64 = legacyContext.screenshotBase64;
 
     if (!base64) {
       throw new Error('screenshot base64 is empty');
@@ -165,12 +173,12 @@ export default class StaticPage implements AbstractInterface {
     if ('screenshot' in this.uiContext && this.uiContext.screenshot) {
       return this.uiContext as UIContext;
     }
-    
+
     // Otherwise, create a proper UIContext from the legacy format
     const screenshotBase64 = await this.screenshotBase64();
     const screenshot = ScreenshotItem.create(screenshotBase64);
     const size = await this.size();
-    
+
     return {
       screenshot,
       size,

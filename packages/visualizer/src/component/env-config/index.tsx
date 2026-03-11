@@ -30,7 +30,12 @@ export function EnvConfig({
 
   const handleOk = () => {
     setIsModalOpen(false);
+    console.log('[Midscene] Saving environment config:', {
+      configLength: tempConfigString.length,
+      preview: tempConfigString.substring(0, 200) + '...',
+    });
     loadConfig(tempConfigString);
+    console.log('[Midscene] Environment config saved successfully');
   };
 
   const handleCancel = () => {
@@ -97,7 +102,7 @@ export function EnvConfig({
         <Input.TextArea
           rows={7}
           placeholder={
-            'OPENAI_API_KEY=sk-...\nMIDSCENE_MODEL_NAME=gpt-4o-2024-08-06\n...'
+            'MIDSCENE_MODEL_API_KEY=sk-...\nMIDSCENE_MODEL_NAME=gpt-4o-2024-08-06\n...'
           }
           value={tempConfigString}
           onChange={(e) => setTempConfigString(e.target.value)}
