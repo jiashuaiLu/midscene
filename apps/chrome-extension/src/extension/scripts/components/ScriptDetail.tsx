@@ -1431,6 +1431,16 @@ export function ScriptDetail({
             </>
           ) : (
             <>
+              <Tooltip title={isExecuting ? "执行中..." : "执行全部步骤"}>
+                <Button 
+                  type="primary"
+                  icon={isExecuting ? <LoadingOutlined /> : <PlayCircleOutlined />}
+                  onClick={() => doExecute(generatedJsScript || script?.autoCaseDetail || '')}
+                  disabled={isExecuting}
+                >
+                  {isExecuting ? '执行中' : '执行全部'}
+                </Button>
+              </Tooltip>
               <Tooltip title="编辑">
                 <Button 
                   icon={<EditOutlined />}
